@@ -1,0 +1,2780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#4a0f0f"/>
+<title>Shashtiabdha Poorthi Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Lora:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+
+<!-- ═══════════════════════════════════════════════════════════
+     ARCHITECTURE NOTES (embedded as comments for reference)
+     
+     PATTERN: Single-File PWA + LocalStorage + Optional Supabase
+     
+     DATA LAYER:
+       - DB.get(table) / DB.set(table, data) / DB.find(table, id)
+       - LocalStorage primary, Supabase cloud sync if configured
+       - All tables: tasks, schedule, guests, shopping, budget,
+                     cleaning, brahmanas, food_status, app_config
+     
+     UI LAYER:
+       - Router: hash-based (#tasks, #guests, etc.)
+       - Components: render functions return HTML strings
+       - Events: delegated on <main>, modal system
+       - State: single APP object, re-render on mutation
+     
+     API CONTRACT (for Supabase REST):
+       GET    /rest/v1/{table}?order=id.asc
+       POST   /rest/v1/{table}          body: row object
+       PATCH  /rest/v1/{table}?id=eq.{id}  body: changes
+       DELETE /rest/v1/{table}?id=eq.{id}
+     
+     SCALABILITY PATH:
+       Phase 1: HTML file + localStorage (current)
+       Phase 2: Supabase backend (add URL+KEY in Settings)
+       Phase 3: Multi-user with Row Level Security
+       Phase 4: React Native app wrapping same API
+     
+     SUPABASE DDL (run once in SQL Editor):
+       CREATE TABLE tasks (id serial PRIMARY KEY, task text, cat text, owner text, priority text DEFAULT 'High', status text DEFAULT 'Pending', notes text, created_at timestamptz DEFAULT now());
+       CREATE TABLE guests (id serial PRIMARY KEY, name text, rel text, phone text, coming int DEFAULT 1, called text DEFAULT 'No', meal text DEFAULT 'Veg', rsvp text DEFAULT '—', location text, notes text);
+       CREATE TABLE shopping (id serial PRIMARY KEY, item text, cat text, grp text, qty numeric, unit text, assigned text, est_cost numeric DEFAULT 0, bought text DEFAULT 'No', notes text);
+       CREATE TABLE budget (id serial PRIMARY KEY, cat text, est numeric DEFAULT 0, actual numeric DEFAULT 0, notes text);
+       CREATE TABLE schedule (id serial PRIMARY KEY, day text, event text, start_time text, end_time text, location text, responsible text, notes text);
+       CREATE TABLE cleaning (id serial PRIMARY KEY, area text, task text, by_when text, done boolean DEFAULT false);
+       CREATE TABLE brahmanas (id serial PRIMARY KEY, slot int, name text, phone text, whatsapp text, address text, dakshina text, special text);
+       CREATE TABLE food_status (id serial PRIMARY KEY, dish text, status text DEFAULT 'To prepare');
+       ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+       CREATE POLICY "open" ON tasks FOR ALL USING (true) WITH CHECK (true);
+       -- Repeat for each table
+═══════════════════════════════════════════════════════════ -->
+
+<style>
+/* ═══════ DESIGN TOKENS ═══════ */
+:root {
+  --c-bg:       #fdf6e8;
+  --c-bg2:      #f5e8cb;
+  --c-card:     #fffdf5;
+  --c-border:   rgba(180,120,40,0.25);
+  --c-maroon:   #5c1010;
+  --c-maroon2:  #8b1a1a;
+  --c-gold:     #b8841c;
+  --c-gold2:    #d4a830;
+  --c-gold3:    #f0c84a;
+  --c-saffron:  #d06b00;
+  --c-text:     #2e1a08;
+  --c-muted:    #7a5a30;
+  --c-green:    #1e5c2a;
+  --c-blue:     #14406a;
+  --c-rust:     #7a2a10;
+  --c-red:      #8b0000;
+  --c-white:    #fffdf5;
+  --c-overlay:  rgba(20,8,0,0.65);
+
+  --r-sm:  6px;
+  --r-md:  10px;
+  --r-lg:  14px;
+  --r-xl:  20px;
+
+  --sh-sm:  0 1px 4px rgba(92,16,16,0.10);
+  --sh-md:  0 3px 14px rgba(92,16,16,0.13);
+  --sh-lg:  0 6px 28px rgba(92,16,16,0.18);
+
+  --font-display: 'Cinzel', serif;
+  --font-body:    'Inter', sans-serif;
+  --font-serif:   'Lora', serif;
+
+  --header-h: 112px;
+  --nav-h:    44px;
+}
+[data-theme="dark"] {
+  --c-bg:     #1a0f04;
+  --c-bg2:    #241508;
+  --c-card:   #2a1a08;
+  --c-border: rgba(212,168,48,0.18);
+  --c-text:   #f0dfc0;
+  --c-muted:  #a08050;
+  --c-white:  #2a1a08;
+  --header-h: 112px;
+}
+
+/* ═══════ RESET ═══════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{font-size:15px;scroll-behavior:smooth;-webkit-text-size-adjust:100%;}
+body{
+  font-family:var(--font-body);
+  background:var(--c-bg);
+  color:var(--c-text);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none;}
+button{font-family:var(--font-body);cursor:pointer;}
+input,select,textarea{font-family:var(--font-body);}
+img{max-width:100%;display:block;}
+
+/* ═══════ SCROLLBAR ═══════ */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--c-bg);}
+::-webkit-scrollbar-thumb{background:var(--c-gold);border-radius:3px;}
+
+/* ═══════ HEADER ═══════ */
+#app-header{
+  position:sticky;top:0;z-index:90;
+  background:linear-gradient(160deg,#4a0808 0%,#2c0404 60%,#1a0202 100%);
+  box-shadow:0 2px 16px rgba(0,0,0,0.5);
+}
+.header-top{
+  max-width:1300px;margin:0 auto;
+  padding:10px 16px 6px;
+  display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+}
+.header-title{
+  font-family:var(--font-display);
+  color:var(--c-gold3);
+  font-size:clamp(14px,3.5vw,22px);
+  letter-spacing:.5px;
+  text-shadow:0 2px 8px rgba(0,0,0,.6);
+  line-height:1.2;
+}
+.header-sub{
+  font-family:var(--font-serif);font-style:italic;
+  color:rgba(240,200,74,.65);font-size:11px;margin-top:2px;
+}
+.header-pills{
+  display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;
+}
+.hpill{
+  background:rgba(255,255,255,.08);
+  border:1px solid rgba(240,200,74,.2);
+  color:rgba(240,200,74,.8);
+  font-size:10px;padding:3px 8px;border-radius:20px;white-space:nowrap;
+}
+.hpill strong{color:var(--c-gold3);}
+
+/* countdown */
+.countdown{
+  display:flex;gap:10px;align-items:center;flex-shrink:0;
+}
+.cd-u{text-align:center;min-width:36px;}
+.cd-n{
+  font-family:var(--font-display);
+  font-size:22px;color:var(--c-gold3);
+  font-weight:700;line-height:1;
+}
+.cd-l{font-size:8px;color:rgba(240,200,74,.5);text-transform:uppercase;letter-spacing:.5px;}
+.cd-sep{color:rgba(240,200,74,.3);font-size:18px;margin-bottom:10px;}
+
+/* top-right controls */
+.header-controls{display:flex;gap:8px;align-items:center;}
+.icon-btn{
+  background:rgba(255,255,255,.1);
+  border:1px solid rgba(240,200,74,.2);
+  color:rgba(240,200,74,.8);
+  border-radius:var(--r-md);padding:6px 10px;font-size:13px;
+  transition:all .2s;
+}
+.icon-btn:hover{background:rgba(240,200,74,.2);}
+
+/* ═══════ NAV ═══════ */
+#app-nav{
+  background:rgba(0,0,0,.35);
+  border-top:1px solid rgba(240,200,74,.1);
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+}
+#app-nav::-webkit-scrollbar{display:none;}
+.nav-inner{
+  max-width:1300px;margin:0 auto;
+  display:flex;min-width:max-content;
+}
+.nav-btn{
+  background:none;border:none;
+  color:rgba(255,255,255,.55);
+  padding:11px 15px;
+  font-size:12px;font-weight:500;
+  letter-spacing:.3px;
+  border-bottom:2px solid transparent;
+  transition:all .2s;white-space:nowrap;
+  display:flex;align-items:center;gap:5px;
+}
+.nav-btn:hover{color:var(--c-gold3);}
+.nav-btn.active{color:var(--c-gold3);border-bottom-color:var(--c-gold3);}
+.nav-badge{
+  background:var(--c-rust);color:#fff;
+  font-size:9px;padding:1px 5px;border-radius:8px;
+  font-weight:700;
+}
+
+/* ═══════ MAIN ═══════ */
+#app-main{
+  max-width:1300px;margin:0 auto;
+  padding:18px 14px 80px;
+}
+.view{display:none;animation:fadeIn .18s ease;}
+.view.active{display:block;}
+@keyframes fadeIn{from{opacity:.4;transform:translateY(4px);}to{opacity:1;transform:none;}}
+
+/* ═══════ CARDS / PANELS ═══════ */
+.card{
+  background:var(--c-card);
+  border-radius:var(--r-lg);
+  border:1px solid var(--c-border);
+  box-shadow:var(--sh-sm);
+  overflow:hidden;
+  margin-bottom:16px;
+}
+.card-header{
+  padding:14px 18px 12px;
+  border-bottom:1px solid var(--c-border);
+  display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+}
+.card-title{
+  font-family:var(--font-display);
+  color:var(--c-maroon);
+  font-size:15px;letter-spacing:.3px;
+  display:flex;align-items:center;gap:8px;
+}
+[data-theme="dark"] .card-title{color:var(--c-gold2);}
+.card-body{padding:16px 18px;}
+.card-footer{
+  padding:10px 18px;
+  border-top:1px solid var(--c-border);
+  background:rgba(245,232,203,.3);
+  display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+}
+[data-theme="dark"] .card-footer{background:rgba(0,0,0,.2);}
+
+/* ═══════ DASHBOARD GRID ═══════ */
+.stat-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:12px;margin-bottom:16px;
+}
+.stat{
+  background:var(--c-card);
+  border-radius:var(--r-lg);
+  border:1px solid var(--c-border);
+  padding:14px 16px;
+  box-shadow:var(--sh-sm);
+  position:relative;overflow:hidden;
+  transition:transform .15s,box-shadow .15s;
+}
+.stat:hover{transform:translateY(-2px);box-shadow:var(--sh-md);}
+.stat::after{
+  content:'';position:absolute;
+  bottom:-12px;right:-12px;
+  width:56px;height:56px;border-radius:50%;
+  background:rgba(180,120,40,.07);
+}
+.stat .s-icon{font-size:22px;margin-bottom:6px;}
+.stat .s-val{
+  font-family:var(--font-display);
+  font-size:26px;font-weight:700;
+  color:var(--c-maroon);line-height:1;
+}
+[data-theme="dark"] .stat .s-val{color:var(--c-gold2);}
+.stat .s-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--c-muted);margin-top:4px;}
+.stat .s-sub{font-size:11px;color:var(--c-muted);margin-top:2px;}
+.stat.accent-gold{border-top:3px solid var(--c-gold);}
+.stat.accent-saffron{border-top:3px solid var(--c-saffron);}
+.stat.accent-green{border-top:3px solid var(--c-green);}
+.stat.accent-blue{border-top:3px solid var(--c-blue);}
+.stat.accent-red{border-top:3px solid var(--c-red);}
+
+/* ═══════ FORM ELEMENTS ═══════ */
+.fgrid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+  gap:12px;
+}
+.fgrid .fg-full{grid-column:1/-1;}
+.fg{display:flex;flex-direction:column;gap:4px;}
+.fg label{
+  font-size:10.5px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.7px;
+  color:var(--c-maroon);
+}
+[data-theme="dark"] .fg label{color:var(--c-gold2);}
+.fg input,.fg select,.fg textarea{
+  border:1.5px solid var(--c-border);
+  border-radius:var(--r-sm);
+  padding:9px 11px;
+  font-size:13.5px;
+  background:var(--c-bg);
+  color:var(--c-text);
+  outline:none;
+  transition:border-color .2s,box-shadow .2s;
+  width:100%;
+}
+.fg input:focus,.fg select:focus,.fg textarea:focus{
+  border-color:var(--c-gold);
+  box-shadow:0 0 0 3px rgba(180,120,40,.12);
+}
+.fg textarea{resize:vertical;min-height:70px;}
+
+/* ═══════ BUTTONS ═══════ */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:9px 18px;
+  border-radius:var(--r-sm);
+  border:none;
+  font-size:13px;font-weight:600;
+  letter-spacing:.2px;
+  cursor:pointer;
+  transition:all .2s;
+  white-space:nowrap;
+}
+.btn-primary{background:var(--c-maroon);color:#fff;}
+.btn-primary:hover{background:var(--c-maroon2);transform:translateY(-1px);box-shadow:var(--sh-sm);}
+.btn-gold{background:var(--c-gold);color:#fff;}
+.btn-gold:hover{background:var(--c-gold2);}
+.btn-outline{background:transparent;color:var(--c-maroon);border:1.5px solid var(--c-maroon);}
+.btn-outline:hover{background:var(--c-maroon);color:#fff;}
+.btn-ghost{background:rgba(180,120,40,.1);color:var(--c-gold);}
+.btn-ghost:hover{background:rgba(180,120,40,.2);}
+.btn-danger{background:var(--c-rust);color:#fff;}
+.btn-danger:hover{background:var(--c-red);}
+.btn-success{background:var(--c-green);color:#fff;}
+.btn-sm{padding:5px 11px;font-size:11.5px;}
+.btn-xs{padding:3px 8px;font-size:10.5px;}
+.btn-icon{padding:7px;border-radius:var(--r-sm);}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;}
+
+/* ═══════ BADGES ═══════ */
+.badge{
+  display:inline-flex;align-items:center;
+  padding:2px 8px;border-radius:12px;
+  font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.4px;
+  white-space:nowrap;
+}
+.b-critical{background:#8b0000;color:#fff;}
+.b-high{background:#fde0dc;color:#8b0000;}
+.b-medium{background:#fff0d0;color:#8b5000;}
+.b-low{background:#dcf0e0;color:#1e5c2a;}
+.b-none{background:#eee;color:#666;}
+.b-pending{background:#fff3dc;color:#a06000;}
+.b-wip{background:#dce8fe;color:#14406a;}
+.b-done{background:#dcf0e0;color:#1e5c2a;}
+.b-blocked{background:#fde0dc;color:#8b0000;}
+.b-cancelled{background:#eee;color:#888;text-decoration:line-through;}
+.b-yes{background:#dcf0e0;color:#1e5c2a;}
+.b-no{background:#fde0dc;color:#8b0000;}
+.b-waiting{background:#fff0d0;color:#8b5000;}
+.b-india{background:#fde0dc;color:#8b0000;}
+.b-nj{background:#dce8fe;color:#14406a;}
+.b-bought{background:#dcf0e0;color:#1e5c2a;}
+.b-researching{background:#dce8fe;color:#14406a;}
+[data-theme="dark"] .b-high{background:rgba(139,0,0,.4);color:#ffaaaa;}
+[data-theme="dark"] .b-done{background:rgba(30,92,42,.4);color:#88ee88;}
+[data-theme="dark"] .b-pending{background:rgba(139,80,0,.4);color:#ffcc88;}
+
+/* ═══════ TABLE ═══════ */
+.tbl-wrap{overflow-x:auto;border-radius:var(--r-md);border:1px solid var(--c-border);}
+.tbl{width:100%;border-collapse:collapse;font-size:13px;}
+.tbl th{
+  background:var(--c-maroon);
+  color:var(--c-gold3);
+  padding:10px 12px;
+  text-align:left;
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  font-weight:600;
+  white-space:nowrap;
+}
+[data-theme="dark"] .tbl th{background:#2a0808;}
+.tbl td{
+  padding:9px 12px;
+  border-bottom:1px solid var(--c-border);
+  vertical-align:middle;
+  color:var(--c-text);
+}
+.tbl tr:last-child td{border-bottom:none;}
+.tbl tr:hover td{background:rgba(180,120,40,.05);}
+.tbl td .inline-input{
+  border:1px solid var(--c-border);
+  border-radius:var(--r-sm);
+  padding:4px 7px;
+  font-size:12px;
+  background:var(--c-bg);
+  color:var(--c-text);
+  width:100%;
+  min-width:70px;
+}
+.tbl td .inline-input:focus{outline:none;border-color:var(--c-gold);}
+.tbl td select.inline-input{min-width:85px;}
+
+/* ═══════ FILTER BAR ═══════ */
+.filter-bar{
+  display:flex;flex-wrap:wrap;gap:8px;
+  align-items:center;margin-bottom:14px;
+}
+.filter-bar input,.filter-bar select{
+  border:1.5px solid var(--c-border);
+  border-radius:var(--r-sm);
+  padding:7px 10px;
+  font-size:12.5px;
+  background:var(--c-card);
+  color:var(--c-text);
+  min-width:0;flex-shrink:1;
+}
+.filter-bar input:focus,.filter-bar select:focus{
+  outline:none;border-color:var(--c-gold);
+}
+.filter-bar input[type=search]{min-width:150px;}
+
+/* ═══════ TIMELINE ═══════ */
+.timeline{padding-left:26px;position:relative;}
+.timeline::before{
+  content:'';position:absolute;left:8px;top:0;bottom:0;
+  width:2px;background:linear-gradient(180deg,var(--c-gold),var(--c-saffron));
+  border-radius:2px;
+}
+.tl-group-label{
+  font-family:var(--font-display);
+  font-size:12px;letter-spacing:.8px;
+  color:var(--c-maroon);
+  background:var(--c-bg2);
+  padding:7px 14px;
+  border-radius:var(--r-md);
+  margin:14px 0 8px -6px;
+  border-left:4px solid var(--c-gold);
+  position:relative;
+}
+[data-theme="dark"] .tl-group-label{background:var(--c-bg2);}
+.tl-item{
+  position:relative;
+  background:var(--c-card);
+  border-radius:var(--r-md);
+  padding:11px 14px;
+  margin-bottom:8px;
+  border:1px solid var(--c-border);
+  box-shadow:var(--sh-sm);
+  transition:box-shadow .2s;
+}
+.tl-item:hover{box-shadow:var(--sh-md);}
+.tl-item::before{
+  content:'';
+  position:absolute;left:-20px;top:14px;
+  width:10px;height:10px;border-radius:50%;
+  border:2px solid var(--c-bg);
+  box-shadow:0 0 0 2px var(--c-gold);
+  background:var(--c-gold);
+}
+.tl-item.prev::before{background:var(--c-blue);box-shadow:0 0 0 2px var(--c-blue);}
+.tl-item.prev{border-left:3px solid var(--c-blue);}
+.tl-item.cel{border-left:3px solid var(--c-saffron);}
+.tl-item.cel::before{background:var(--c-saffron);box-shadow:0 0 0 2px var(--c-saffron);}
+.tl-time{font-size:10.5px;color:var(--c-muted);font-family:var(--font-serif);font-style:italic;}
+.tl-title{font-size:14px;font-weight:600;color:var(--c-maroon);margin:2px 0;}
+[data-theme="dark"] .tl-title{color:var(--c-gold2);}
+.tl-meta{font-size:11.5px;color:var(--c-muted);margin-top:2px;}
+
+/* ═══════ PROGRESS BAR ═══════ */
+.progress-wrap{
+  background:var(--c-bg2);
+  border-radius:20px;height:8px;overflow:hidden;margin-top:6px;
+}
+.progress-bar{
+  height:100%;border-radius:20px;
+  background:linear-gradient(90deg,var(--c-gold),var(--c-saffron));
+  transition:width .4s ease;
+}
+
+/* ═══════ SECTION DIVIDER ═══════ */
+.section-divider{
+  font-family:var(--font-display);
+  font-size:12px;letter-spacing:1px;
+  color:var(--c-maroon);
+  background:var(--c-bg2);
+  padding:7px 14px;
+  border-radius:var(--r-sm);
+  margin:16px 0 8px;
+  border-left:4px solid var(--c-gold);
+}
+[data-theme="dark"] .section-divider{background:rgba(0,0,0,.3);color:var(--c-gold2);}
+
+/* ═══════ ALERT BANNER ═══════ */
+.alert{
+  padding:10px 14px;
+  border-radius:var(--r-sm);
+  font-size:12.5px;
+  margin-bottom:12px;
+  line-height:1.5;
+}
+.alert-info{background:rgba(20,64,106,.1);border:1px solid rgba(20,64,106,.2);color:var(--c-blue);}
+.alert-warn{background:rgba(160,96,0,.1);border:1px solid rgba(160,96,0,.2);color:var(--c-saffron);}
+.alert-success{background:rgba(30,92,42,.1);border:1px solid rgba(30,92,42,.2);color:var(--c-green);}
+.alert-danger{background:rgba(139,0,0,.1);border:1px solid rgba(139,0,0,.2);color:var(--c-red);}
+[data-theme="dark"] .alert-info{background:rgba(20,64,106,.25);}
+[data-theme="dark"] .alert-warn{background:rgba(160,96,0,.25);}
+
+/* ═══════ MODAL ═══════ */
+#modal-overlay{
+  position:fixed;inset:0;background:var(--c-overlay);
+  z-index:500;display:none;
+  align-items:center;justify-content:center;padding:16px;
+  backdrop-filter:blur(4px);
+}
+#modal-overlay.open{display:flex;}
+.modal{
+  background:var(--c-card);
+  border-radius:var(--r-xl);
+  box-shadow:var(--sh-lg);
+  max-width:560px;width:100%;
+  max-height:92vh;overflow-y:auto;
+  position:relative;
+  animation:modalIn .22s cubic-bezier(.34,1.56,.64,1);
+}
+@keyframes modalIn{from{opacity:0;transform:scale(.92) translateY(20px);}to{opacity:1;transform:none;}}
+.modal-header{
+  padding:18px 20px 14px;
+  border-bottom:1px solid var(--c-border);
+  font-family:var(--font-display);
+  color:var(--c-maroon);font-size:16px;
+  display:flex;justify-content:space-between;align-items:center;
+}
+[data-theme="dark"] .modal-header{color:var(--c-gold2);}
+.modal-body{padding:18px 20px;}
+.modal-footer{
+  padding:14px 20px;
+  border-top:1px solid var(--c-border);
+  display:flex;gap:8px;justify-content:flex-end;
+}
+.modal-close{
+  background:none;border:none;
+  font-size:20px;color:var(--c-muted);cursor:pointer;
+  padding:2px 6px;border-radius:var(--r-sm);
+  transition:background .2s;
+}
+.modal-close:hover{background:rgba(0,0,0,.08);}
+
+/* ═══════ TOAST ═══════ */
+#toast-container{
+  position:fixed;bottom:20px;right:16px;
+  z-index:1000;display:flex;flex-direction:column;gap:8px;
+}
+.toast{
+  background:var(--c-maroon);color:var(--c-gold3);
+  padding:10px 18px;border-radius:var(--r-md);
+  font-size:13px;font-weight:600;
+  box-shadow:var(--sh-lg);
+  transform:translateX(110%);
+  transition:transform .28s cubic-bezier(.34,1.56,.64,1);
+  max-width:280px;
+  display:flex;align-items:center;gap:8px;
+}
+.toast.show{transform:translateX(0);}
+.toast.success{background:var(--c-green);}
+.toast.error{background:var(--c-red);}
+
+/* ═══════ EMPTY STATE ═══════ */
+.empty{
+  text-align:center;padding:40px 20px;
+  color:var(--c-muted);
+}
+.empty .e-icon{font-size:44px;margin-bottom:12px;}
+.empty p{font-size:14px;}
+
+/* ═══════ BRAHMANA CARD ═══════ */
+.brahm-card{
+  border:1px solid var(--c-border);
+  border-radius:var(--r-lg);
+  overflow:hidden;margin-bottom:16px;
+}
+.brahm-head{
+  background:linear-gradient(135deg,rgba(92,16,16,.12),rgba(180,120,40,.08));
+  padding:13px 17px;
+  border-bottom:1px solid var(--c-border);
+}
+.brahm-head .bh-title{
+  font-family:var(--font-display);color:var(--c-maroon);font-size:14px;
+}
+[data-theme="dark"] .brahm-head .bh-title{color:var(--c-gold2);}
+.brahm-head .bh-sub{font-size:11.5px;color:var(--c-muted);margin-top:2px;font-family:var(--font-serif);font-style:italic;}
+.brahm-body{padding:16px;}
+
+/* ═══════ FOOD ═══════ */
+.menu-section{margin-bottom:18px;}
+.menu-sec-title{
+  font-family:var(--font-display);font-size:12px;
+  color:var(--c-maroon);letter-spacing:.8px;
+  background:var(--c-bg2);padding:7px 14px;
+  border-radius:var(--r-sm) var(--r-sm) 0 0;
+  border-bottom:1px solid var(--c-border);
+}
+[data-theme="dark"] .menu-sec-title{background:rgba(0,0,0,.3);color:var(--c-gold2);}
+.menu-item{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:9px 14px;gap:10px;flex-wrap:wrap;
+  border-bottom:1px solid var(--c-border);
+  background:var(--c-card);
+  transition:background .15s;
+}
+.menu-item:last-child{border-bottom:none;border-radius:0 0 var(--r-sm) var(--r-sm);}
+.menu-item:hover{background:rgba(180,120,40,.05);}
+.mi-name{font-weight:600;font-size:13px;color:var(--c-text);}
+.mi-detail{font-size:11.5px;color:var(--c-muted);margin-top:2px;}
+.mi-course{font-size:10.5px;color:var(--c-gold);font-style:italic;}
+.mi-status select{
+  border:1px solid var(--c-border);border-radius:var(--r-sm);
+  padding:4px 7px;font-size:11.5px;background:var(--c-bg);color:var(--c-text);
+  min-width:110px;
+}
+.mi-status select:focus{outline:none;border-color:var(--c-gold);}
+
+/* ═══════ BUDGET ═══════ */
+.budget-summary{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:14px;
+}
+.bs-card{
+  background:var(--c-card);border-radius:var(--r-md);
+  padding:12px 14px;border-top:3px solid var(--c-gold);
+  box-shadow:var(--sh-sm);text-align:center;
+}
+.bs-val{font-family:var(--font-display);font-size:20px;color:var(--c-maroon);font-weight:700;}
+[data-theme="dark"] .bs-val{color:var(--c-gold2);}
+.bs-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--c-muted);margin-top:3px;}
+.bs-card.over{border-top-color:var(--c-rust);}
+.bs-card.under{border-top-color:var(--c-green);}
+
+/* ═══════ CLEANING ═══════ */
+.clean-area{margin-bottom:14px;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--c-border);}
+.clean-area-head{
+  background:var(--c-bg2);
+  padding:8px 14px;
+  font-family:var(--font-display);font-size:11.5px;
+  color:var(--c-maroon);letter-spacing:.5px;
+  display:flex;justify-content:space-between;align-items:center;
+}
+[data-theme="dark"] .clean-area-head{background:rgba(0,0,0,.3);color:var(--c-gold2);}
+.clean-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 14px;
+  border-bottom:1px solid var(--c-border);
+  background:var(--c-card);
+  cursor:pointer;transition:background .15s;
+}
+.clean-item:last-child{border-bottom:none;}
+.clean-item:hover{background:rgba(180,120,40,.05);}
+.clean-item.done .ci-task{text-decoration:line-through;color:var(--c-muted);}
+.clean-item input[type=checkbox]{
+  accent-color:var(--c-maroon);width:16px;height:16px;cursor:pointer;flex-shrink:0;
+}
+.ci-task{font-size:13px;flex:1;}
+.ci-by{font-size:10.5px;color:var(--c-muted);white-space:nowrap;}
+
+/* ═══════ REPORT ═══════ */
+.report-kpi{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(115px,1fr));gap:10px;margin-bottom:16px;
+}
+.rk{
+  background:var(--c-card);border-radius:var(--r-md);padding:12px;
+  border-top:3px solid var(--c-gold);box-shadow:var(--sh-sm);text-align:center;
+}
+.rk-val{font-family:var(--font-display);font-size:24px;color:var(--c-maroon);}
+[data-theme="dark"] .rk-val{color:var(--c-gold2);}
+.rk-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--c-muted);margin-top:3px;}
+
+/* ═══════ SETTINGS ═══════ */
+.settings-section{margin-bottom:22px;}
+.settings-section h3{
+  font-family:var(--font-display);color:var(--c-maroon);font-size:13px;
+  letter-spacing:.4px;margin-bottom:10px;padding-bottom:7px;
+  border-bottom:1px solid var(--c-border);
+}
+[data-theme="dark"] .settings-section h3{color:var(--c-gold2);}
+.sql-box{
+  background:#1e1e2e;color:#cdd6f4;
+  padding:12px;border-radius:var(--r-md);
+  font-size:11px;font-family:monospace;
+  white-space:pre-wrap;overflow-x:auto;
+  line-height:1.6;margin:10px 0;max-height:280px;overflow-y:auto;
+}
+
+/* ═══════ YOUTUBE ═══════ */
+.yt-step{
+  display:flex;gap:14px;padding:12px 0;
+  border-bottom:1px solid var(--c-border);
+}
+.yt-step:last-child{border-bottom:none;}
+.yt-num{
+  min-width:28px;height:28px;border-radius:50%;
+  background:var(--c-maroon);color:var(--c-gold3);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-display);font-size:12px;font-weight:700;flex-shrink:0;
+}
+.yt-content{font-size:13px;line-height:1.65;}
+.yt-content strong{color:var(--c-maroon);}
+[data-theme="dark"] .yt-content strong{color:var(--c-gold2);}
+
+/* ═══════ RESPONSIVE ═══════ */
+@media(max-width:640px){
+  .header-top{padding:8px 12px 4px;}
+  .countdown{display:none;}
+  #app-main{padding:12px 10px 80px;}
+  .stat-grid{grid-template-columns:repeat(2,1fr);}
+  .fgrid{grid-template-columns:1fr;}
+  .tbl{font-size:12px;}
+  .tbl th,.tbl td{padding:7px 9px;}
+  .card-body{padding:12px 14px;}
+  .card-header{padding:11px 14px 9px;}
+}
+@media(min-width:1100px){
+  .fgrid{grid-template-columns:repeat(3,1fr);}
+}
+
+/* ═══════ PRINT ═══════ */
+@media print{
+  #app-header,#app-nav,.btn,.filter-bar,.modal-overlay,#toast-container{display:none!important;}
+  .view{display:block!important;}
+  .card{box-shadow:none;border:1px solid #ccc;}
+  body{background:#fff;}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════ -->
+<header id="app-header">
+  <div class="header-top">
+    <div style="flex:1;min-width:0;">
+      <div class="header-title">🙏 Shashtiabdha Poorthi — Srinivasan's 60th</div>
+      <div class="header-sub">Thenkalai SriVaishnava Celebration • Jun 12–13, 2026</div>
+      <div class="header-pills">
+        <span class="hpill">📍 Sri Vari Balaji Koyil, Somerset NJ</span>
+        <span class="hpill">📞 Coord: <strong>Srinath Nallan 732.666.1554</strong></span>
+        <span class="hpill">🏠 Prev. Eve: 216 Hampshire Dr, Plainsboro NJ</span>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+      <div class="header-controls">
+        <button class="icon-btn" onclick="APP.toggleTheme()" title="Toggle dark mode">🌙</button>
+        <button class="icon-btn" onclick="APP.navigate('settings')" title="Settings">⚙️</button>
+        <button class="icon-btn" onclick="window.print()" title="Print">🖨️</button>
+      </div>
+      <div class="countdown" id="countdown">
+        <div class="cd-u"><div class="cd-n" id="cd-d">—</div><div class="cd-l">Days</div></div>
+        <div class="cd-sep">:</div>
+        <div class="cd-u"><div class="cd-n" id="cd-h">—</div><div class="cd-l">Hrs</div></div>
+        <div class="cd-sep">:</div>
+        <div class="cd-u"><div class="cd-n" id="cd-m">—</div><div class="cd-l">Min</div></div>
+      </div>
+    </div>
+  </div>
+  <nav id="app-nav">
+    <div class="nav-inner" id="nav-inner">
+      <button class="nav-btn active" data-view="dashboard">🏠 Dashboard</button>
+      <button class="nav-btn" data-view="tasks">✅ Tasks <span class="nav-badge" id="nb-tasks">0</span></button>
+      <button class="nav-btn" data-view="schedule">📅 Schedule</button>
+      <button class="nav-btn" data-view="guests">👥 Guests <span class="nav-badge" id="nb-guests">0</span></button>
+      <button class="nav-btn" data-view="shopping">🛒 Shopping <span class="nav-badge" id="nb-shop">0</span></button>
+      <button class="nav-btn" data-view="brahmanas">🕉️ Brahmanas</button>
+      <button class="nav-btn" data-view="food">🍽️ Menu</button>
+      <button class="nav-btn" data-view="cleaning">🧹 Cleaning</button>
+      <button class="nav-btn" data-view="budget">💰 Budget</button>
+      <button class="nav-btn" data-view="report">📊 Report</button>
+      <button class="nav-btn" data-view="youtube">📺 Livestream</button>
+      <button class="nav-btn" data-view="settings">⚙️ Settings</button>
+    </div>
+  </nav>
+</header>
+
+<!-- ══════════════════════════════════════════════
+     MAIN CONTENT
+══════════════════════════════════════════════ -->
+<main id="app-main">
+
+<!-- ── DASHBOARD ── -->
+<div class="view active" id="view-dashboard">
+  <div class="stat-grid" id="dash-stats"></div>
+
+  <!-- Quick Actions -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-header"><span class="card-title">⚡ Quick Actions</span></div>
+    <div class="card-body">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="APP.openModal('add-task')">+ Add Task</button>
+        <button class="btn btn-gold btn-sm" onclick="APP.openModal('add-guest')">+ Add Guest</button>
+        <button class="btn btn-ghost btn-sm" onclick="APP.openModal('add-shop')">+ Shopping Item</button>
+        <button class="btn btn-ghost btn-sm" onclick="APP.navigate('schedule')">📅 View Schedule</button>
+        <button class="btn btn-ghost btn-sm" onclick="APP.navigate('report')">📊 Full Report</button>
+        <button class="btn btn-ghost btn-sm" onclick="APP.navigate('youtube')">📺 Livestream Setup</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">⚠️ High Priority — Pending Tasks</span></div>
+    <div class="card-body" id="dash-highpri"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;">
+    <div class="card">
+      <div class="card-header"><span class="card-title">📅 Next 3 Events</span></div>
+      <div class="card-body" id="dash-schedule"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">🧹 Cleaning Progress</span></div>
+      <div class="card-body" id="dash-cleaning"></div>
+    </div>
+  </div>
+
+  <!-- Event Info Summary -->
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header"><span class="card-title">📋 Event At-a-Glance</span></div>
+    <div class="card-body">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;font-size:13px;line-height:1.9;">
+        <div>
+          <div style="font-family:var(--font-display);font-size:11px;color:var(--c-maroon);letter-spacing:.8px;margin-bottom:6px;border-bottom:1px solid var(--c-border);padding-bottom:4px;">🌙 PREVIOUS EVENING — FRI JUN 12</div>
+          <div>📍 216 Hampshire Dr, Plainsboro NJ 08536</div>
+          <div>⏰ Veda Parayanam: <strong>6:30–8:00 PM</strong></div>
+          <div>🌿 Divyaprabhandham Goshti: <strong>6:30 PM</strong></div>
+          <div>👥 Expected: <strong>10–20 guests</strong></div>
+          <div>🍽️ Dinner for 2 Brahmanas: <strong>8:00 PM</strong></div>
+        </div>
+        <div>
+          <div style="font-family:var(--font-display);font-size:11px;color:var(--c-maroon);letter-spacing:.8px;margin-bottom:6px;border-bottom:1px solid var(--c-border);padding-bottom:4px;">☀️ CELEBRATION — SAT JUN 13</div>
+          <div>📍 Sri Vari Balaji Koyil, 619 Elizabeth Ave, Somerset NJ 08873</div>
+          <div>⏰ Puja: <strong>9:00–11:00 AM</strong></div>
+          <div>🔥 Sudharshana Homam: <strong>9:30–10:30 AM</strong></div>
+          <div>🍽️ Lunch (banana leaves): <strong>after 11 AM</strong></div>
+          <div>👥 ~50 guests expected</div>
+        </div>
+        <div>
+          <div style="font-family:var(--font-display);font-size:11px;color:var(--c-maroon);letter-spacing:.8px;margin-bottom:6px;border-bottom:1px solid var(--c-border);padding-bottom:4px;">📞 KEY CONTACTS</div>
+          <div>🕉️ Puja Coord: <strong>Srinath Nallan</strong></div>
+          <div>📞 <a href="tel:7326661554" style="color:var(--c-maroon);font-weight:600;">732.666.1554</a></div>
+          <div>🌐 <a href="https://srivaritemple.org/" target="_blank" style="color:var(--c-maroon);">srivaritemple.org</a></div>
+          <div>👤 Srikanth (VA): <a href="tel:+13018759088" style="color:var(--c-maroon);">+1-301-875-9088</a></div>
+          <div>👤 Shanti Mami: <a href="tel:+17323716280" style="color:var(--c-maroon);">+1-732-371-6280</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── TASKS ── -->
+<div class="view" id="view-tasks">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">✅ Master Task List</span>
+      <button class="btn btn-gold btn-sm" onclick="APP.openModal('add-task')">+ Add Task</button>
+    </div>
+    <div class="card-body">
+      <div class="filter-bar">
+        <select id="tf-status" onchange="TASKS.render()"><option value="">All Statuses</option><option>Pending</option><option>WIP</option><option>Done</option><option>Blocked</option><option>Cancelled</option></select>
+        <select id="tf-priority" onchange="TASKS.render()"><option value="">All Priorities</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select>
+        <select id="tf-cat" onchange="TASKS.render()"><option value="">All Categories</option><option>Ritual items</option><option>Shopping</option><option>Ritual</option><option>Puja</option><option>Hospitality</option><option>Facility</option><option>Venue</option><option>Guest Mgmt</option><option>Invitations</option><option>RSVP</option><option>Food</option><option>Dining</option><option>Cleaning</option><option>Decor</option><option>Gifts</option><option>Memories</option><option>Logistics</option><option>Cleanup</option><option>Other</option></select>
+        <input type="search" id="tf-search" placeholder="Search tasks…" oninput="TASKS.render()"/>
+      </div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Task</th><th>Category</th><th>Owner</th><th>Priority</th><th>Status</th><th>Notes</th><th style="width:60px;">Actions</th></tr></thead><tbody id="tasks-tbody"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SCHEDULE ── -->
+<div class="view" id="view-schedule">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">📅 2-Day Event Schedule</span>
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm" onclick="SCHEDULE.filter('all')">All</button>
+        <button class="btn btn-ghost btn-sm" onclick="SCHEDULE.filter('prev')">Fri Jun 12</button>
+        <button class="btn btn-ghost btn-sm" onclick="SCHEDULE.filter('cel')">Sat Jun 13</button>
+        <button class="btn btn-gold btn-sm" onclick="APP.openModal('add-schedule')">+ Add Event</button>
+      </div>
+    </div>
+    <div class="card-body"><div class="timeline" id="schedule-tl"></div></div>
+  </div>
+</div>
+
+<!-- ── GUESTS ── -->
+<div class="view" id="view-guests">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">👥 Guest List & RSVP</span>
+      <button class="btn btn-gold btn-sm" onclick="APP.openModal('add-guest')">+ Add Guest</button>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-warn" style="margin-bottom:10px;">🇮🇳 Guests marked <strong>India</strong> will not attend in person — invite to YouTube livestream instead.</div>
+      <div class="filter-bar">
+        <input type="search" id="gf-search" placeholder="Search name…" oninput="GUESTS.render()"/>
+        <select id="gf-rsvp" onchange="GUESTS.render()"><option value="">All RSVP</option><option>Yes</option><option>No</option><option>Waiting</option><option>—</option></select>
+        <select id="gf-loc" onchange="GUESTS.render()"><option value="">All Locations</option><option>New Jersey</option><option>India</option><option>California</option><option>Virginia</option><option>Texas</option><option>Chicago</option><option>North Dakota</option><option>Singapore</option><option>Canada</option><option>Other USA</option></select>
+      </div>
+      <div id="guest-summary" style="font-size:12px;color:var(--c-muted);margin-bottom:10px;"></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Name</th><th>Relationship</th><th>Phone</th><th># Coming</th><th>Called?</th><th>RSVP</th><th>Location</th><th>Notes</th><th>✕</th></tr></thead><tbody id="guests-tbody"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SHOPPING ── -->
+<div class="view" id="view-shopping">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🛒 Shopping List</span>
+      <button class="btn btn-gold btn-sm" onclick="APP.openModal('add-shop')">+ Add Item</button>
+    </div>
+    <div class="card-body">
+      <div class="filter-bar">
+        <select id="sf-bought" onchange="SHOPPING.render()"><option value="">All Items</option><option value="No">Not Bought</option><option value="Yes">Bought ✓</option><option value="Researching">Researching</option></select>
+        <select id="sf-cat" onchange="SHOPPING.render()"><option value="">All Categories</option><option>Ritual</option><option>Ritual/Jewelry</option><option>Attire</option><option>Puja</option><option>Dining</option><option>Groceries</option><option>Sweets</option><option>Venue</option><option>Decor</option><option>Gifts</option></select>
+        <input type="search" id="sf-search" placeholder="Search item…" oninput="SHOPPING.render()"/>
+      </div>
+      <div id="shopping-groups"></div>
+      <div class="budget-summary" id="shop-budget" style="margin-top:14px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── BRAHMANAS ── -->
+<div class="view" id="view-brahmanas">
+  <div id="brahm-cards"></div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">📋 Standard Puja Samagri Checklist</span></div>
+    <div class="card-body" id="samagri-list"></div>
+  </div>
+</div>
+
+<!-- ── FOOD ── -->
+<div class="view" id="view-food">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🍽️ Traditional Menu — Iyengar / Tamil Brahmin Style</span>
+      <span style="font-size:12px;color:var(--c-muted);font-style:italic;">All vegetarian · Banana leaves · Lunch after 11 AM</span>
+    </div>
+    <div class="card-body" id="food-menu"></div>
+  </div>
+</div>
+
+<!-- ── CLEANING ── -->
+<div class="view" id="view-cleaning">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🧹 Home Cleaning Checklist</span>
+      <div class="btn-row">
+        <span id="clean-pct" style="font-size:12px;color:var(--c-muted);align-self:center;"></span>
+        <button class="btn btn-ghost btn-sm" onclick="CLEANING.reset()">Reset All</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="progress-wrap" style="margin-bottom:14px;"><div class="progress-bar" id="clean-prog" style="width:0%"></div></div>
+      <div id="cleaning-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── BUDGET ── -->
+<div class="view" id="view-budget">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">💰 Budget Tracker — Estimated vs Actual</span>
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm" onclick="BUDGET.addRow()">+ Row</button>
+        <button class="btn btn-primary btn-sm" onclick="BUDGET.save()">💾 Save</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="budget-summary" id="budget-summary"></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Category</th><th>Estimated ($)</th><th>Actual ($)</th><th>Gap ($)</th><th>Notes</th><th>✕</th></tr></thead><tbody id="budget-tbody"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── REPORT ── -->
+<div class="view" id="view-report">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">📊 Planning Report</span>
+      <button class="btn btn-ghost btn-sm" onclick="window.print()">🖨️ Print</button>
+    </div>
+    <div class="card-body">
+      <div class="report-kpi" id="report-kpi"></div>
+      <div class="section-divider">Task Status by Priority</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Priority</th><th>Task</th><th>Category</th><th>Owner</th><th>Status</th><th>Notes</th></tr></thead><tbody id="report-tasks"></tbody></table></div>
+      <div class="section-divider" style="margin-top:18px;">Shopping Status</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th><th>Group</th><th>Qty</th><th>Assigned</th><th>Est Cost</th><th>Status</th></tr></thead><tbody id="report-shop"></tbody></table></div>
+      <div class="section-divider" style="margin-top:18px;">Guest Summary</div>
+      <div id="report-guests"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── YOUTUBE ── -->
+<div class="view" id="view-youtube">
+  <div class="card">
+    <div class="card-header"><span class="card-title">📺 YouTube Livestream Guide — For India Family</span></div>
+    <div class="card-body">
+      <div class="alert alert-info" style="margin-bottom:14px;">
+        <strong>India Guests to invite:</strong> Padma Chithi, Viji Chitappa, Venkatesan Chithia, Papa Chithia, Chinna Rangu, Satya, Srowthigal — they will watch via YouTube Unlisted link sent on WhatsApp.
+      </div>
+      <!-- YouTube Link + WhatsApp Share -->
+      <div style="background:var(--c-bg2);border-radius:var(--r-md);padding:14px 16px;margin-bottom:14px;border:1px solid var(--c-border);">
+        <div style="font-family:var(--font-display);font-size:12px;color:var(--c-maroon);letter-spacing:.5px;margin-bottom:10px;">📎 YOUR YOUTUBE LIVE LINK</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="url" id="yt-link" placeholder="Paste your YouTube Unlisted link here after creating it…"
+            style="flex:1;min-width:200px;border:1.5px solid var(--c-border);border-radius:var(--r-sm);padding:9px 11px;font-size:13px;background:var(--c-bg);color:var(--c-text);"
+            oninput="YOUTUBE.saveLink(this.value)"/>
+          <button class="btn btn-success btn-sm" onclick="YOUTUBE.shareWhatsApp()">💬 Share via WhatsApp</button>
+          <button class="btn btn-ghost btn-sm" onclick="YOUTUBE.copyLink()">📋 Copy Link</button>
+        </div>
+        <div style="font-size:11.5px;color:var(--c-muted);margin-top:6px;">Set visibility to <strong>Unlisted</strong> when creating the stream. Paste the link above and use the WhatsApp button to send to India family.</div>
+      </div>
+      <div id="yt-steps"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">🛠️ Equipment & Tips</span></div>
+    <div class="card-body" id="yt-equipment"></div>
+  </div>
+  <div class="card" style="border-left:4px solid var(--c-saffron);">
+    <div class="card-header"><span class="card-title">⚠️ Critical: Test Stream Reminder</span></div>
+    <div class="card-body">
+      <p style="font-size:13px;line-height:1.7;">Do a <strong>test livestream on Jun 10–11</strong>. Go live for 10 minutes, ask a family member in India to click the link and confirm they can see and hear. Troubleshoot before the actual day.</p>
+      <div class="alert alert-warn" style="margin-top:10px;">
+        📞 <strong>Srikanth (Virginia cousin)</strong> +1-301-875-9088 — needs early notice as he is out of state. Send YouTube link 2–3 days before.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SETTINGS ── -->
+<div class="view" id="view-settings">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">⚙️ Settings & Data</span>
+      <span id="sync-badge" style="font-size:12px;padding:4px 10px;border-radius:20px;background:rgba(0,0,0,.06);">🔵 Local only</span>
+    </div>
+    <div class="card-body">
+
+      <!-- ── SUPABASE ── -->
+      <div class="settings-section">
+        <h3>☁️ Supabase Cloud Database (Free — Recommended)</h3>
+        <p style="font-size:13px;color:var(--c-muted);margin-bottom:12px;line-height:1.7;">
+          Connect a free <strong>Supabase</strong> database so your data syncs across all devices — phone, tablet, laptop — in real time. Without this, data stays only in this browser and is lost if you clear it.
+        </p>
+        <div class="alert alert-info" style="margin-bottom:12px;">
+          <strong>How to set up (5 minutes, free forever):</strong><br/>
+          1. Go to <strong>supabase.com</strong> → Sign up free → New Project<br/>
+          2. Wait ~2 min → Settings → API → copy <strong>Project URL</strong> and <strong>anon public key</strong><br/>
+          3. Paste both below → click <strong>Save &amp; Test</strong><br/>
+          4. Go to SQL Editor → New Query → paste the schema below → Run
+        </div>
+        <div class="fgrid" style="grid-template-columns:1fr;">
+          <div class="fg"><label>Supabase Project URL</label>
+            <input type="url" id="sb-url" placeholder="https://xxxxxxxxxxxx.supabase.co" autocomplete="off"/></div>
+          <div class="fg"><label>Supabase Anon Public Key</label>
+            <input type="text" id="sb-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…" autocomplete="off"/></div>
+        </div>
+        <div class="btn-row" style="margin-top:10px;">
+          <button class="btn btn-primary btn-sm" onclick="SETTINGS.saveSupabase()">💾 Save &amp; Test Connection</button>
+          <button class="btn btn-ghost btn-sm" onclick="SETTINGS.clearSupabase()">Clear Config</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--c-maroon);border-color:var(--c-maroon);" onclick="SETTINGS.resyncAll()">🔄 Re-sync All to Cloud</button>
+        </div>
+        <div id="sb-status" style="margin-top:10px;font-size:13px;line-height:1.6;"></div>
+      </div>
+
+      <!-- ── SQL SCHEMA ── -->
+      <div class="settings-section">
+        <h3>🗄️ Database Schema — Run Once in Supabase SQL Editor</h3>
+        <p style="font-size:12.5px;color:var(--c-muted);margin-bottom:8px;">Copy this SQL → go to your Supabase project → SQL Editor → New Query → paste → click Run:</p>
+        <div class="sql-box" id="sql-schema"></div>
+        <div class="btn-row" style="margin-top:8px;">
+          <button class="btn btn-ghost btn-sm" onclick="SETTINGS.copySQL()">📋 Copy SQL to Clipboard</button>
+        </div>
+      </div>
+
+      <!-- ── GITHUB DEPLOY ── -->
+      <div class="settings-section">
+        <h3>🚀 Deploy to GitHub Pages — Free Hosting (Always Available)</h3>
+        <p style="font-size:13px;color:var(--c-muted);margin-bottom:12px;line-height:1.7;">
+          Host this planner online so anyone can open it from any device via a URL. GitHub Pages is completely free.
+        </p>
+        <div style="background:var(--c-bg2);border-radius:var(--r-md);padding:16px;font-size:13px;line-height:2;">
+          <div style="font-family:var(--font-display);font-size:11px;color:var(--c-maroon);letter-spacing:.8px;margin-bottom:8px;">OPTION A — GITHUB PAGES (FREE, PERMANENT URL)</div>
+          <strong>Step 1 — Create a GitHub account</strong><br/>
+          Go to <strong>github.com</strong> → Sign Up (free). Use your Gmail.<br/><br/>
+          <strong>Step 2 — Create a new repository</strong><br/>
+          Click the <strong>+</strong> icon → New Repository → Name it: <code style="background:rgba(0,0,0,.08);padding:1px 6px;border-radius:4px;">shashtiabdha-planner</code> → set to <strong>Public</strong> → Create.<br/><br/>
+          <strong>Step 3 — Upload this HTML file</strong><br/>
+          In your new repo → click <strong>Add file → Upload files</strong> → drag &amp; drop this HTML file → <strong>rename it to <code style="background:rgba(0,0,0,.08);padding:1px 6px;border-radius:4px;">index.html</code></strong> → click <strong>Commit changes</strong>.<br/><br/>
+          <strong>Step 4 — Enable GitHub Pages</strong><br/>
+          In the repo → <strong>Settings → Pages</strong> → Source: <strong>Deploy from a branch</strong> → Branch: <strong>main</strong> → folder: <strong>/ (root)</strong> → Save.<br/><br/>
+          <strong>Step 5 — Get your URL</strong><br/>
+          After ~1 minute, your site is live at:<br/>
+          <code style="background:rgba(0,0,0,.08);padding:3px 8px;border-radius:4px;font-size:12px;">https://YOUR-GITHUB-USERNAME.github.io/shashtiabdha-planner/</code><br/><br/>
+          Share this URL with family. Open on iPhone, Android, Windows — works everywhere.<br/><br/>
+          <strong>To update the site later:</strong> Go to the repo → click <code style="background:rgba(0,0,0,.08);padding:1px 6px;border-radius:4px;">index.html</code> → pencil icon → paste new version → Commit. Updated in ~1 min.
+        </div>
+
+        <div style="background:var(--c-bg2);border-radius:var(--r-md);padding:16px;font-size:13px;line-height:2;margin-top:12px;">
+          <div style="font-family:var(--font-display);font-size:11px;color:var(--c-maroon);letter-spacing:.8px;margin-bottom:8px;">OPTION B — NETLIFY DROP (EVEN SIMPLER, 30 SECONDS)</div>
+          1. Go to <strong>netlify.com/drop</strong><br/>
+          2. Drag and drop this HTML file onto the page<br/>
+          3. You instantly get a URL like <code style="background:rgba(0,0,0,.08);padding:1px 6px;border-radius:4px;">https://random-name-123.netlify.app</code><br/>
+          4. Share that URL with family<br/><br/>
+          <em style="color:var(--c-muted);">Note: Free Netlify sites expire after some time unless you create an account. GitHub Pages is permanent.</em>
+        </div>
+
+        <div class="alert alert-warn" style="margin-top:12px;">
+          💡 <strong>Important:</strong> The planner stores data in your browser's localStorage on whatever device you open it on. To share data across devices, connect Supabase (above) — then all devices read from and write to the same database.
+        </div>
+      </div>
+
+      <!-- ── PWA INSTALL ── -->
+      <div class="settings-section">
+        <h3>📱 Install as App on Your Phone / Tablet</h3>
+        <div style="background:var(--c-bg2);border-radius:var(--r-md);padding:14px;font-size:13px;line-height:1.9;">
+          <strong>iPhone (Safari):</strong> Open the URL → tap Share button (box with arrow) → "Add to Home Screen" → Add. Works like a native app.<br/>
+          <strong>Android (Chrome):</strong> Open the URL → tap ⋮ menu → "Add to Home Screen" → Add.<br/>
+          <strong>Windows (Chrome/Edge):</strong> Open the URL → click install icon in address bar → Install.
+        </div>
+      </div>
+
+      <!-- ── DATA MANAGEMENT ── -->
+      <div class="settings-section">
+        <h3>💾 Data Management — Backup &amp; Restore</h3>
+        <div class="btn-row">
+          <button class="btn btn-ghost btn-sm" onclick="SETTINGS.exportData()">⬇️ Export JSON Backup</button>
+          <button class="btn btn-ghost btn-sm" onclick="SETTINGS.importData()">⬆️ Import JSON Backup</button>
+          <button class="btn btn-danger btn-sm" onclick="SETTINGS.resetAll()">⚠️ Reset All to Defaults</button>
+        </div>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="SETTINGS.handleImport(event)"/>
+        <p style="font-size:11.5px;color:var(--c-muted);margin-top:10px;">Export your data regularly as a JSON backup. If you clear your browser or switch devices, you can restore from the backup file.</p>
+      </div>
+
+      <!-- ── APPEARANCE ── -->
+      <div class="settings-section">
+        <h3>🎨 Appearance</h3>
+        <button class="btn btn-outline btn-sm" onclick="APP.toggleTheme()">🌙 Toggle Dark / Light Mode</button>
+      </div>
+
+      <!-- ── ARCH NOTES ── -->
+      <div class="settings-section">
+        <h3>🏗️ Technical Architecture</h3>
+        <div style="background:var(--c-bg2);border-radius:var(--r-md);padding:14px;font-size:12px;line-height:1.9;color:var(--c-muted);">
+          <strong style="color:var(--c-maroon);">Pattern:</strong> Single-file PWA · LocalStorage (offline-first) · Optional Supabase cloud sync<br/>
+          <strong style="color:var(--c-maroon);">Data flow:</strong> Every write → localStorage immediately (instant, offline) → Supabase REST API in background (if configured)<br/>
+          <strong style="color:var(--c-maroon);">On startup:</strong> If Supabase configured → fetch all tables → merge into localStorage → render<br/>
+          <strong style="color:var(--c-maroon);">Scalability path:</strong> Phase 1: localStorage only → Phase 2: Supabase sync → Phase 3: Multi-user with RLS → Phase 4: React Native app<br/>
+          <strong style="color:var(--c-maroon);">Works on:</strong> iPhone Safari, Android Chrome, Windows Chrome/Edge/Firefox<br/>
+          <strong style="color:var(--c-maroon);">Tables:</strong> tasks, guests, schedule, shopping, budget, brahmanas (all in Supabase PostgreSQL)<br/>
+          <strong style="color:var(--c-maroon);">API:</strong> Supabase PostgREST — GET/POST/PATCH/DELETE per table
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</main>
+
+<!-- ══ MODAL ══ -->
+<div id="modal-overlay" onclick="APP.closeModal(event)">
+  <div class="modal" id="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span id="modal-title">Dialog</span>
+      <button class="modal-close" onclick="APP.closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- ══ TOAST ══ -->
+<div id="toast-container"></div>
+
+<!-- ══════════════════════════════════════════════
+     APPLICATION JAVASCRIPT
+══════════════════════════════════════════════ -->
+<script>
+'use strict';
+// ═══════════════════════════════════════════════════════════════════════
+//  DB LAYER
+//  • All reads/writes go to localStorage immediately (offline-first)
+//  • If Supabase URL+KEY are configured, every write is ALSO pushed to
+//    the cloud (fire-and-forget so UI never blocks)
+//  • On startup, if Supabase is configured, cloud data is fetched and
+//    merged (cloud wins for newer ids)
+//
+//  Supabase REST API used:
+//    GET    /rest/v1/{table}?order=id.asc&limit=500
+//    POST   /rest/v1/{table}                        (insert row)
+//    PATCH  /rest/v1/{table}?id=eq.{id}             (update row)
+//    DELETE /rest/v1/{table}?id=eq.{id}             (delete row)
+// ═══════════════════════════════════════════════════════════════════════
+const DB = {
+  _pfx: 'sp3_',
+  // ── LocalStorage ──────────────────────────────────────────────────
+  lsGet(k)   { try { return JSON.parse(localStorage.getItem(this._pfx+k)); } catch { return null; } },
+  lsSet(k,v) { try { localStorage.setItem(this._pfx+k, JSON.stringify(v)); } catch {} },
+  lsDel(k)   { localStorage.removeItem(this._pfx+k); },
+  // ── Supabase config ───────────────────────────────────────────────
+  sbUrl(){ return localStorage.getItem('sp3_cfg_url') || ''; },
+  sbKey(){ return localStorage.getItem('sp3_cfg_key') || ''; },
+  sbOk() { return !!(this.sbUrl() && this.sbKey()); },
+  // ── Supabase REST helper ──────────────────────────────────────────
+  async sb(method, table, body, filter='') {
+    if (!this.sbOk()) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout — prevents stuck "Syncing..."
+    try {
+      const r = await fetch(`${this.sbUrl()}/rest/v1/${table}${filter}`, {
+        method,
+        signal: controller.signal,
+        headers: {
+          'Content-Type':  'application/json',
+          'apikey':        this.sbKey(),
+          'Authorization': 'Bearer ' + this.sbKey(),
+          'Prefer':        method==='POST' ? 'return=representation' : 'return=minimal'
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      clearTimeout(timeout);
+      if (!r.ok) { const t=await r.text(); console.warn('SB error',method,table,r.status,t); return null; }
+      const ct = r.headers.get('content-type')||'';
+      return ct.includes('json') ? await r.json() : null;
+    } catch(e) {
+      clearTimeout(timeout);
+      console.warn('SB fetch failed', e.message);
+      return null;
+    }
+  },
+  // ── Cloud sync helpers (fire-and-forget, never block UI) ──────────
+  async cloudInsert(table, row) {
+    if (!this.sbOk()) return;
+    // Remove local numeric id; let Supabase assign its own, then patch local id
+    const {id:localId, ...payload} = row;
+    const res = await this.sb('POST', table, payload);
+    if (res && res[0]) {
+      // Update local record with Supabase-assigned id
+      const arr = this.lsGet(table) || [];
+      const idx = arr.findIndex(x=>x.id===localId);
+      if (idx>-1) { arr[idx].id = res[0].id; this.lsSet(table, arr); }
+    }
+  },
+  async cloudUpdate(table, row) {
+    if (!this.sbOk()) return;
+    const {id, ...payload} = row;
+    await this.sb('PATCH', table, payload, `?id=eq.${id}`);
+  },
+  async cloudDelete(table, id) {
+    if (!this.sbOk()) return;
+    await this.sb('DELETE', table, null, `?id=eq.${id}`);
+  },
+  // ── Load all tables from Supabase ─────────────────────────────────
+  async loadFromCloud() {
+    if (!this.sbOk()) return false;
+    // Only fetch tables that actually exist in the Supabase schema
+    // cleaning and foodStatus are localStorage-only (no cloud table needed)
+    // FIX: brahmanas Supabase table name maps to 'brahm' localStorage key
+    const tableMap = [
+      { sb: 'tasks',     ls: 'tasks'    },
+      { sb: 'schedule',  ls: 'schedule' },
+      { sb: 'guests',    ls: 'guests'   },
+      { sb: 'shopping',  ls: 'shopping' },
+      { sb: 'budget',    ls: 'budget'   },
+      { sb: 'brahmanas', ls: 'brahm'    },
+    ];
+    let reachable = false;
+    for (const {sb, ls} of tableMap) {
+      const rows = await this.sb('GET', sb, null, '?order=id.asc&limit=500');
+      if (Array.isArray(rows)) {
+        reachable = true; // Supabase is responding
+        if (rows.length > 0) {
+          this.lsSet(ls, rows);
+        }
+      }
+    }
+    return reachable; // true = Supabase connected, even if tables are empty
+  },
+
+  // ── Push ALL local data up to Supabase (used on first connect / resync) ──
+  async pushAllToCloud(onProgress) {
+    if (!this.sbOk()) return { ok: false, msg: 'Not configured' };
+    const tableMap = [
+      { ls: 'tasks',    sb: 'tasks',     fields: ['task','cat','owner','priority','status','notes'] },
+      { ls: 'guests',   sb: 'guests',    fields: ['name','rel','phone','coming','called','rsvp','location','notes'] },
+      { ls: 'schedule', sb: 'schedule',  fields: ['day','event','start_time','end_time','location','responsible','notes'] },
+      { ls: 'shopping', sb: 'shopping',  fields: ['item','cat','grp','qty','unit','assigned','est_cost','bought','notes'] },
+      { ls: 'budget',   sb: 'budget',    fields: ['cat','est','actual','notes'] },
+      { ls: 'brahm',    sb: 'brahmanas', fields: ['slot','name','phone','whatsapp','address','dakshina','special'] },
+    ];
+    let pushed = 0;
+    let errors = 0;
+    for (const {ls, sb, fields} of tableMap) {
+      if (onProgress) onProgress(`Uploading ${sb}…`);
+      // Delete existing rows in Supabase first (clean slate)
+      await this.sb('DELETE', sb, null, '?id=gte.0');
+      const rows = this.lsGet(ls) || [];
+      for (const row of rows) {
+        // Only send fields that exist in schema (strip local-only fields)
+        const payload = {};
+        fields.forEach(f => { if (row[f] !== undefined) payload[f] = row[f]; });
+        // Map local field name differences
+        if (ls === 'schedule') {
+          payload.start_time = row.start; delete payload.undefined;
+          payload.end_time   = row.end;
+        }
+        const res = await this.sb('POST', sb, payload);
+        if (res) pushed++; else errors++;
+      }
+    }
+    return { ok: true, pushed, errors };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SEED DATA
+// ═══════════════════════════════════════════════════════════════════════
+const SEED = {
+tasks: [
+  {id:1,task:'Thenkalai thirumangalyam & meti — arrange',cat:'Ritual items',owner:'Harini',priority:'High',status:'Pending',notes:'Sacred thread + toe ring'},
+  {id:2,task:'Buy new veshti x12 + 2 sarees + jibaa',cat:'Shopping',owner:'Harini & Srinivasan',priority:'High',status:'Pending',notes:'Goshti 5-8, Vaadhiyaar 3, Madhavan'},
+  {id:3,task:'Confirm friend as Nathanaar (ritual role)',cat:'Ritual',owner:'Srinivasan',priority:'High',status:'Pending',notes:''},
+  {id:4,task:'Sudharshana Homam — confirm with Brahmana',cat:'Puja',owner:'Srinivasan',priority:'High',status:'Pending',notes:'See Brahmanas tab'},
+  {id:5,task:'PREV DAY: Veda Parayanam 6:30–8 PM at home',cat:'Ritual',owner:'Both Brahmanas',priority:'High',status:'Pending',notes:'Fri Jun 12 — Divyaprabhandham Goshti'},
+  {id:6,task:'PREV DAY: Dinner for 2 Brahmanas at 8 PM',cat:'Hospitality',owner:'Family',priority:'High',status:'Pending',notes:'Full traditional dinner'},
+  {id:7,task:'Finalize all guests — confirm head count',cat:'Guest Mgmt',owner:'Srinivasan',priority:'High',status:'Pending',notes:'See Guests tab'},
+  {id:8,task:'Send WhatsApp invitations to all guests',cat:'Invitations',owner:'Srinivasan',priority:'High',status:'Pending',notes:''},
+  {id:9,task:'Set up RSVP page (Partiful recommended)',cat:'RSVP',owner:'Srinivasan',priority:'High',status:'Pending',notes:'partiful.com — free, beautiful'},
+  {id:10,task:'Confirm 2 Brahmanas — get samagri list',cat:'Puja',owner:'Srinivasan',priority:'High',status:'Pending',notes:'See Brahmanas tab'},
+  {id:11,task:'Buy puja samagri — flowers, fruits, dakshina',cat:'Shopping',owner:'Harini',priority:'High',status:'Pending',notes:''},
+  {id:12,task:'Cook full traditional lunch menu',cat:'Food',owner:'Family',priority:'High',status:'Pending',notes:'See Menu tab'},
+  {id:13,task:'Arrange banana leaves / plates / cups (50)',cat:'Dining',owner:'Harini',priority:'Medium',status:'Pending',notes:''},
+  {id:14,task:'Deep clean house room by room',cat:'Cleaning',owner:'Family',priority:'High',status:'Pending',notes:'See Cleaning tab'},
+  {id:15,task:'Decorate: rangoli, flowers, lamps, entrance',cat:'Decor',owner:'Family',priority:'Medium',status:'Pending',notes:''},
+  {id:16,task:'Arrange return gifts — tamboolam x45',cat:'Gifts',owner:'Padmini',priority:'Medium',status:'Pending',notes:''},
+  {id:17,task:'Designate photographer / video person',cat:'Memories',owner:'Srinivasan',priority:'Medium',status:'Pending',notes:''},
+  {id:18,task:'Confirm parking / directions for guests',cat:'Logistics',owner:'Srinivasan',priority:'Low',status:'Pending',notes:''},
+  {id:19,task:'Arrange shamiana & 20 chairs in backyard',cat:'Venue',owner:'Srinivasan',priority:'High',status:'Pending',notes:''},
+  {id:20,task:'Prepare dakshina envelopes for priests',cat:'Puja',owner:'Srinivasan',priority:'High',status:'Pending',notes:'See Budget tab'},
+  {id:21,task:'YouTube test stream — target Jun 10–11',cat:'Logistics',owner:'Srinivasan',priority:'High',status:'Pending',notes:''},
+  {id:22,task:'Send YouTube link to India family via WhatsApp',cat:'Logistics',owner:'Srinivasan',priority:'High',status:'Pending',notes:'Night before event'},
+  {id:23,task:'Early notice to Srikanth (Virginia) — +1-301-875-9088',cat:'Invitations',owner:'Srinivasan',priority:'High',status:'Pending',notes:'Out of state — confirm travel early'},
+  {id:24,task:'Post-event cleanup plan',cat:'Cleanup',owner:'Family',priority:'Low',status:'Pending',notes:''},
+  {id:25,task:'Book Divyaprabhandham Goshti — 5-10 people',cat:'Ritual',owner:'Srinivasan',priority:'High',status:'Pending',notes:'Previous evening at home'},
+],
+guests: [
+  {id:1,name:'Embar Srinidhi',rel:'Friend / Vaishnava community',phone:'',coming:3,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:2,name:'Purushothaman',rel:'Friend',phone:'',coming:4,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:3,name:'Bhaskar Radhakrishnan',rel:'Friend',phone:'',coming:3,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:4,name:'Desikan Narasimhan',rel:'Friend',phone:'',coming:4,called:'No',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:5,name:'Ravi Narayanaswamy',rel:'Friend',phone:'',coming:2,called:'Yes',rsvp:'No',location:'New Jersey',notes:''},
+  {id:6,name:'Badri',rel:'Friend',phone:'',coming:2,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:7,name:'RaviShankar',rel:'Friend',phone:'',coming:1,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:8,name:'Stan Ravi',rel:'Friend',phone:'',coming:2,called:'Yes',rsvp:'—',location:'New Jersey',notes:''},
+  {id:9,name:'Viji Venkatesan',rel:'Friend / Family',phone:'',coming:1,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:10,name:'Shanti Mami',rel:'Family — Mami',phone:'+1 (732) 371-6280',coming:2,called:'Yes',rsvp:'Waiting',location:'New Jersey',notes:''},
+  {id:11,name:'Pawan Swamy',rel:'Friend / Spiritual',phone:'',coming:2,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:12,name:'Bharath (Srishti USA)',rel:'Friend — USA',phone:'',coming:1,called:'No',rsvp:'—',location:'Texas',notes:'Out of state'},
+  {id:13,name:'Adith',rel:'Friend',phone:'',coming:1,called:'Yes',rsvp:'Waiting',location:'Canada',notes:''},
+  {id:14,name:'Madhusudhan Vojayaraghavan',rel:'Friend / Family',phone:'',coming:2,called:'No',rsvp:'—',location:'California',notes:''},
+  {id:15,name:'Vinoo Vijayaraghavan',rel:'Friend / Family',phone:'',coming:2,called:'No',rsvp:'—',location:'California',notes:''},
+  {id:16,name:"Anita — Babu's Daughter",rel:'Family',phone:'',coming:2,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:17,name:"Madhu — Geetha's Son",rel:'Family',phone:'',coming:3,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:18,name:"Priya — Kannamani's Daughter",rel:'Family',phone:'',coming:3,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:19,name:"Sai — Dada's Daughter",rel:'Family',phone:'',coming:1,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:20,name:"Vidhya — Harini's friend (Janani's mom)",rel:"Wife's friend",phone:'',coming:4,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:21,name:"Renuka — Harini's friend",rel:"Wife's friend",phone:'',coming:4,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:22,name:'Anitaji',rel:'Friend',phone:'+1 (848) 234-9354',coming:1,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:23,name:'Gopi — my friend',rel:'Friend',phone:'+1 (732) 371-6280',coming:2,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:24,name:'Padma Chithi',rel:'Family — Chitthi',phone:'',coming:1,called:'Yes',rsvp:'No',location:'India',notes:'With Viji Chitappa — Livestream'},
+  {id:25,name:'Viji Chitappa',rel:'Family — Chitappa',phone:'',coming:1,called:'Yes',rsvp:'No',location:'India',notes:'Counted with #24 — Livestream'},
+  {id:26,name:'Venkatesan Chithia',rel:'Family — Chithia',phone:'',coming:2,called:'No',rsvp:'No',location:'India',notes:'Livestream'},
+  {id:27,name:'Papa Chithia',rel:'Family — Chithia',phone:'',coming:2,called:'No',rsvp:'No',location:'India',notes:'Livestream'},
+  {id:28,name:'Chinna Rangu',rel:'Family / Friend',phone:'',coming:2,called:'No',rsvp:'No',location:'India',notes:'Livestream'},
+  {id:29,name:'Satya',rel:'Friend',phone:'',coming:2,called:'No',rsvp:'No',location:'India',notes:'Livestream'},
+  {id:30,name:'Srowthigal',rel:'Friend / Vaidika',phone:'',coming:1,called:'No',rsvp:'No',location:'India',notes:'Livestream'},
+  {id:31,name:'Srikanth — cousin (Virginia)',rel:'Cousin — out of state',phone:'+1-301-875-9088',coming:2,called:'No',rsvp:'—',location:'Virginia',notes:'⚠️ Early notice needed — confirm travel'},
+  {id:32,name:'Radhika — my cousin',rel:'Cousin',phone:'+65-9856-3260',coming:2,called:'No',rsvp:'No',location:'Singapore',notes:'Livestream'},
+  {id:33,name:"Revathy — Harini's cousin",rel:"Wife's side cousin",phone:'',coming:2,called:'No',rsvp:'—',location:'California',notes:''},
+  {id:34,name:"Mukund — Harini's cousin",rel:"Wife's side cousin",phone:'',coming:3,called:'No',rsvp:'—',location:'Texas',notes:''},
+  {id:35,name:"Arabi — Harini's cousin",rel:"Wife's side cousin",phone:'',coming:3,called:'No',rsvp:'—',location:'USA',notes:''},
+  {id:36,name:'Sarangan',rel:'Friend',phone:'',coming:1,called:'No',rsvp:'—',location:'North Dakota',notes:''},
+  {id:37,name:'Mukundan — Theta Healing',rel:'Friend / Healer',phone:'',coming:2,called:'No',rsvp:'—',location:'Chicago',notes:''},
+  {id:38,name:'Poondi Mama',rel:'Family — Mama',phone:'',coming:1,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:39,name:'Vaidehi Sriram',rel:'Friend',phone:'',coming:3,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:40,name:'Dr. Sowmya (Dentist)',rel:'Friend / Doctor',phone:'',coming:3,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:41,name:'Madhavan Friends',rel:'Friend',phone:'',coming:3,called:'No',rsvp:'—',location:'New Jersey',notes:''},
+  {id:42,name:'Madhavan',rel:'Family',phone:'',coming:1,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:43,name:'Srinivasan + Haripriya (hosts)',rel:'Host couple',phone:'',coming:2,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:44,name:'Padmini',rel:'Family',phone:'',coming:1,called:'Yes',rsvp:'Yes',location:'New Jersey',notes:''},
+  {id:45,name:'Sristhuthi',rel:'Family',phone:'',coming:1,called:'Yes',rsvp:'—',location:'New Jersey',notes:''},
+],
+schedule:[
+  {id:1,day:'prev',event:'Grocery & last-minute shopping',start:'10:00 AM',end:'2:00 PM',location:'Market',responsible:'Designated',notes:'Per Shopping list'},
+  {id:2,day:'prev',event:'Home decoration & rangoli setup',start:'4:00 PM',end:'6:00 PM',location:'Entire home',responsible:'Family',notes:'Flowers, lamps, kolam at entrance'},
+  {id:3,day:'prev',event:'Brahmanas arrive for briefing',start:'6:00 PM',end:'6:30 PM',location:'Home',responsible:'Host',notes:'Offer welcome, water, fruits'},
+  {id:4,day:'prev',event:'Divyaprabhandham Goshti + Veda Parayanam + Vishnu Sahasranama',start:'6:30 PM',end:'8:00 PM',location:'Puja Room (Home)',responsible:'2 Brahmanas + Goshti',notes:'10–20 guests; 216 Hampshire Dr, Plainsboro NJ'},
+  {id:5,day:'prev',event:'Evening snacks for Brahmanas & guests',start:'7:00 PM',end:'7:30 PM',location:'Kitchen',responsible:'Family',notes:'Kesari, idly, dadhiyonam'},
+  {id:6,day:'prev',event:'Dinner for 2 Brahmanas',start:'8:00 PM',end:'9:00 PM',location:'Dining',responsible:'Host family',notes:'Full traditional dinner'},
+  {id:7,day:'cel',event:'Personal preparation — bath & new veshti',start:'5:00 AM',end:'6:30 AM',location:'Home',responsible:'Srinivasan',notes:'Sacred thread, fresh attire'},
+  {id:8,day:'cel',event:'Guest arrival & reception begins',start:'8:00 AM',end:'9:00 AM',location:'Entrance',responsible:'Family',notes:'Welcome with kumkum, flowers'},
+  {id:9,day:'cel',event:'Brahmanas arrive & puja setup',start:'8:30 AM',end:'9:00 AM',location:'Puja Room',responsible:'Host',notes:'Arrange samagri, dakshina ready'},
+  {id:10,day:'cel',event:'Shashtiabdha Poorthi Puja begins',start:'9:00 AM',end:'11:00 AM',location:'Puja Room',responsible:'Both Brahmanas',notes:'Main ritual — Thenkalai style'},
+  {id:11,day:'cel',event:'Sudharshana Homam (fire ritual)',start:'9:30 AM',end:'10:30 AM',location:'Puja Room',responsible:'Both Brahmanas',notes:'Homa kunda required'},
+  {id:12,day:'cel',event:'Mangalashtakam & Ashirvachanam',start:'10:30 AM',end:'11:00 AM',location:'Puja Room',responsible:'Brahmanas',notes:'Blessings to couple from elders'},
+  {id:13,day:'cel',event:'Vayattu Ampu (elder gift ritual)',start:'11:00 AM',end:'11:30 AM',location:'Puja Room',responsible:'Elder family',notes:'Tamboolam exchange'},
+  {id:14,day:'cel',event:'Family & group photo session',start:'11:30 AM',end:'12:00 PM',location:'Decorated area',responsible:'Photographer',notes:'Group + individual shots'},
+  {id:15,day:'cel',event:'LUNCH — served on banana leaves',start:'12:00 PM',end:'1:30 PM',location:'Backyard shamiana',responsible:'Kitchen team',notes:'Full Iyengar menu — ~50 guests'},
+  {id:16,day:'cel',event:'Dakshina & farewell to Brahmanas',start:'1:30 PM',end:'2:00 PM',location:'Puja Room',responsible:'Srinivasan',notes:'Cash dakshina + veshti + tamboolam'},
+  {id:17,day:'cel',event:'Afternoon gathering / satsang',start:'2:00 PM',end:'4:00 PM',location:'Living room',responsible:'All',notes:'Speeches, music, blessings'},
+  {id:18,day:'cel',event:'Evening snacks & filter coffee',start:'4:00 PM',end:'5:00 PM',location:'Living room',responsible:'Kitchen',notes:'Bajji, murukku, sweets'},
+  {id:19,day:'cel',event:'Return gifts distribution (tamboolam)',start:'5:00 PM',end:'5:30 PM',location:'Entrance',responsible:'Family',notes:'All guests'},
+  {id:20,day:'cel',event:'Guest departure & farewell',start:'5:30 PM',end:'6:30 PM',location:'Entrance',responsible:'Family',notes:'See off warmly'},
+  {id:21,day:'cel',event:'Cleanup & prasadam distribution',start:'6:30 PM',end:'8:00 PM',location:'All areas',responsible:'Family',notes:'Leftover food plan, puja items'},
+],
+shopping:[
+  {id:1,item:'Thenkalai thirumangalyam (sacred thread)',cat:'Ritual',grp:'Ritual / Attire',qty:1,unit:'piece',assigned:'Harini',estCost:600,bought:'No',notes:''},
+  {id:2,item:'Meti (silver toe ring for wife)',cat:'Ritual/Jewelry',grp:'Ritual / Attire',qty:1,unit:'pair',assigned:'Harini',estCost:100,bought:'No',notes:''},
+  {id:3,item:'Veshti x12 (Goshti + Vaadhiyaar + Madhavan)',cat:'Attire',grp:'Ritual / Attire',qty:12,unit:'pcs',assigned:'Harini & Srinivasan',estCost:0,bought:'No',notes:''},
+  {id:4,item:'Sarees x2 (Manni, Vaishnavi)',cat:'Attire',grp:'Ritual / Attire',qty:2,unit:'pcs',assigned:'Harini & Srinivasan',estCost:0,bought:'No',notes:''},
+  {id:5,item:'Jibaa (kurta) for Madhavan',cat:'Attire',grp:'Ritual / Attire',qty:1,unit:'pc',assigned:'Harini & Srinivasan',estCost:0,bought:'No',notes:''},
+  {id:6,item:'Clothes for Children (Salwar kurta)',cat:'Attire',grp:'Ritual / Attire',qty:2,unit:'pcs',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:7,item:'Vastaram for Thayar/Perumal (Sri Vari Koyil)',cat:'Attire',grp:'Ritual / Attire',qty:1,unit:'pc',assigned:'India',estCost:0,bought:'No',notes:''},
+  {id:8,item:'Flowers — jasmine, marigold, lotus',cat:'Puja',grp:'Puja Samagri',qty:5,unit:'lb',assigned:'Harini',estCost:0,bought:'No',notes:'Fresh on the day'},
+  {id:9,item:'Banana bunch (for puja)',cat:'Puja',grp:'Puja Samagri',qty:2,unit:'bunch',assigned:'Srinivasan',estCost:0,bought:'No',notes:''},
+  {id:10,item:'Coconuts',cat:'Puja',grp:'Puja Samagri',qty:10,unit:'pcs',assigned:'India',estCost:0,bought:'No',notes:''},
+  {id:11,item:'Fruits assorted (mango, plantain, grape)',cat:'Puja',grp:'Puja Samagri',qty:3,unit:'lb',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:12,item:'Camphor, incense sticks, lamp wicks',cat:'Puja',grp:'Puja Samagri',qty:1,unit:'set',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:13,item:'Turmeric, kumkum, sandal paste',cat:'Puja',grp:'Puja Samagri',qty:1,unit:'set',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:14,item:'Panchamrit: milk, honey, ghee, curd, sugar',cat:'Puja',grp:'Puja Samagri',qty:1,unit:'set',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:15,item:'Dakshina cash envelopes (for 2 Brahmanas)',cat:'Puja',grp:'Puja Samagri',qty:2,unit:'envelopes',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:16,item:'Sesame, rice, ghee for homam',cat:'Puja',grp:'Puja Samagri',qty:1,unit:'set',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:17,item:'Betel leaves & areca nut (tamboolam)',cat:'Puja',grp:'Puja Samagri',qty:2,unit:'pack',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:18,item:'Plates + Spoons (50 pcs)',cat:'Dining',grp:'Puja Samagri',qty:50,unit:'pcs',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:19,item:'Kesari / sooji halwa ingredients',cat:'Groceries',grp:'Food & Groceries',qty:3,unit:'lb',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:20,item:'Coffee powder & milk',cat:'Groceries',grp:'Food & Groceries',qty:500,unit:'g',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:21,item:'Vethilai & Pakku',cat:'Groceries',grp:'Food & Groceries',qty:1,unit:'set',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:22,item:'Jaggery, sesame oil, vegetables',cat:'Groceries',grp:'Food & Groceries',qty:1,unit:'set',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:23,item:'Appalam / papad, murukku',cat:'Groceries',grp:'Food & Groceries',qty:2,unit:'pack',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:24,item:'Mysore Pak',cat:'Sweets',grp:'Food & Groceries',qty:1,unit:'lb',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:25,item:'Laddu (besan)',cat:'Sweets',grp:'Food & Groceries',qty:1,unit:'lb',assigned:'',estCost:0,bought:'No',notes:''},
+  {id:26,item:'Koyil + Vaadhiyaar booking ✓',cat:'Venue',grp:'Venue & Logistics',qty:1,unit:'unit',assigned:'Srinivasan',estCost:1213,bought:'Yes',notes:'DONE — Sri Vari Balaji Koyil'},
+  {id:27,item:'Disposable cups & plates backup',cat:'Dining',grp:'Venue & Logistics',qty:50,unit:'set',assigned:'Harini & Srinivasan',estCost:0,bought:'No',notes:''},
+  {id:28,item:'Rangoli powder (colors)',cat:'Decor',grp:'Venue & Logistics',qty:3,unit:'pack',assigned:'H+S+P',estCost:0,bought:'No',notes:''},
+  {id:29,item:'Return gift tamboolam packets',cat:'Gifts',grp:'Venue & Logistics',qty:45,unit:'pcs',assigned:'Padmini',estCost:0,bought:'No',notes:''},
+],
+budget:[
+  {id:1,cat:'Attire: veshtis x12, sarees, jibaa',est:150,actual:0,notes:''},
+  {id:2,cat:'Puja samagri: flowers, fruits, camphor, incense',est:100,actual:0,notes:''},
+  {id:3,cat:'Homam: homa kunda + sesame, rice, ghee',est:50,actual:0,notes:''},
+  {id:4,cat:'Dakshina for 2 Brahmanas (cash)',est:300,actual:0,notes:''},
+  {id:5,cat:'Vastra gift (veshti + angavastram x2)',est:80,actual:0,notes:''},
+  {id:6,cat:'Hall / Koyil booking',est:650,actual:1213,notes:'Booked ✓'},
+  {id:7,cat:'Food (Bhojanasala / catered)',est:500,actual:0,notes:''},
+  {id:8,cat:'Balabogam (Idilly, vada, coffee)',est:200,actual:0,notes:''},
+  {id:9,cat:'Sweets: Mysore Pak, Laddu',est:60,actual:0,notes:''},
+  {id:10,cat:'Decoration: flowers, rangoli, lights, diyas',est:80,actual:0,notes:''},
+  {id:11,cat:'Return gifts / tamboolam x45',est:90,actual:0,notes:''},
+  {id:12,cat:'Photography / videography',est:150,actual:0,notes:''},
+  {id:13,cat:'Invitations (digital)',est:20,actual:0,notes:''},
+  {id:14,cat:'Meti (silver toe ring)',est:100,actual:0,notes:''},
+  {id:15,cat:'Mangalyam (sacred thread)',est:600,actual:0,notes:''},
+  {id:16,cat:'Vaadhyaar + 2 Brahmanas',est:900,actual:0,notes:''},
+  {id:17,cat:'Contingency / miscellaneous',est:138,actual:0,notes:''},
+],
+cleaning:[
+  {area:'Entrance & Living Room',tasks:[
+    {id:1,task:'Sweep & mop main entrance floor',by:'2 days before',done:false},
+    {id:2,task:'Draw rangoli / kolam at entrance',by:'Morning of event',done:false},
+    {id:3,task:'Hang flower garlands / torana at door',by:'Morning of event',done:false},
+    {id:4,task:'Vacuum / mop living room floor',by:'2 days before',done:false},
+    {id:5,task:'Dust all furniture, shelves, ceiling fans',by:'2 days before',done:false},
+    {id:6,task:'Clean windows & glass surfaces',by:'2 days before',done:false},
+    {id:7,task:'Arrange seating area for guests',by:'Day before',done:false},
+  ]},
+  {area:'Puja Room',tasks:[
+    {id:8,task:'Deep clean puja room floor & walls',by:'2 days before',done:false},
+    {id:9,task:'Clean all vigrahas / idols carefully',by:'2 days before',done:false},
+    {id:10,task:'Arrange fresh flowers on altar',by:'Morning of event',done:false},
+    {id:11,task:'Set up homam area / firepit space',by:'Morning of event',done:false},
+    {id:12,task:'Arrange samagri trays neatly',by:'Morning of event',done:false},
+  ]},
+  {area:'Kitchen',tasks:[
+    {id:13,task:'Deep clean stovetop, counters, sink',by:'2 days before',done:false},
+    {id:14,task:'Clean inside of refrigerator',by:'2 days before',done:false},
+    {id:15,task:'Wash all cooking vessels & pots',by:'Day before',done:false},
+    {id:16,task:'Organize pantry — stock all groceries',by:'Day before',done:false},
+    {id:17,task:'Clean exhaust fan / chimney',by:'2 days before',done:false},
+  ]},
+  {area:'Dining Area',tasks:[
+    {id:18,task:'Clean dining table & chairs',by:'Day before',done:false},
+    {id:19,task:'Set up banana leaf serving area',by:'Morning of event',done:false},
+    {id:20,task:'Place water jugs & tumblers',by:'Morning of event',done:false},
+  ]},
+  {area:'Bathrooms',tasks:[
+    {id:21,task:'Clean & disinfect all bathrooms',by:'2 days before',done:false},
+    {id:22,task:'Stock soap, towels, tissue paper',by:'Day before',done:false},
+    {id:23,task:'Clean all mirrors',by:'Day before',done:false},
+  ]},
+  {area:'Bedrooms',tasks:[
+    {id:24,task:'Vacuum / sweep all bedrooms',by:'2 days before',done:false},
+    {id:25,task:'Change bed sheets & pillow covers',by:'Day before',done:false},
+    {id:26,task:'Tidy wardrobes, put away clutter',by:'2 days before',done:false},
+  ]},
+  {area:'Backyard (Shamiana)',tasks:[
+    {id:27,task:'Clear backyard — remove all clutter',by:'3 days before',done:false},
+    {id:28,task:'Sweep backyard ground area',by:'Day before',done:false},
+    {id:29,task:'Set up shamiana (tent)',by:'Day before',done:false},
+    {id:30,task:'Arrange 20 chairs & tables under shamiana',by:'Morning of event',done:false},
+    {id:31,task:'Hang lights / decoration in backyard',by:'Day before',done:false},
+  ]},
+  {area:'General',tasks:[
+    {id:32,task:'Take out all trash',by:'Day before',done:false},
+    {id:33,task:'Light sambrani / dhoop — purify home',by:'Morning of event',done:false},
+    {id:34,task:'Final walkthrough — 2 hrs before guests',by:'2 hrs before',done:false},
+  ]},
+],
+brahm:[
+  {id:1,slot:1,name:'',phone:'',whatsapp:'',address:'',dakshina:'',special:''},
+  {id:2,slot:2,name:'',phone:'',whatsapp:'',address:'',dakshina:'',special:''},
+],
+foodStatus:{},
+};
+
+const FOOD_MENU_DATA=[
+  {section:'🌙 Previous Day Evening — Fri Jun 12 (Home, Plainsboro NJ)',items:[
+    {course:'Evening Snack',name:'Kesari (semolina halwa)',notes:'Saffron-colored, sweet — for Brahmanas & guests'},
+    {course:'Evening Snack',name:'Idly (soft)',notes:'With coconut chutney & sambar'},
+    {course:'Evening Snack',name:'Dadhiyonam (curd rice)',notes:'Seasoned with curry leaves & mustard'},
+    {course:'Dinner for Brahmanas',name:'Full traditional dinner',notes:'Sambar rice, rasam, poriyal, curd rice'},
+  ]},
+  {section:'☀️ Celebration Day Lunch — after 11 AM (Sat Jun 13)',items:[
+    {course:'Welcome Sweet',name:'Payasam (kheer)',notes:'Served first — semiya or rice payasam with jaggery'},
+    {course:'First Course',name:'Paruppu sadam',notes:'Toor dal with ghee — poured over rice'},
+    {course:'Kuzhambu',name:'Sambar',notes:'Drumstick, tomato & pearl onion'},
+    {course:'Kuzhambu',name:'Rasam',notes:'Pepper rasam / jeera rasam (thin)'},
+    {course:'Kuzhambu',name:'Puli kuzhambu',notes:'Tamarind-based gravy with vegetables'},
+    {course:'Kootu',name:'Vazhakai kootu',notes:'Raw banana & coconut with lentils'},
+    {course:'Kootu / Side',name:'Aviyal',notes:'Mixed vegetables in coconut-curd gravy'},
+    {course:'Poriyal',name:'Beans poriyal',notes:'French beans stir-fry with coconut'},
+    {course:'Poriyal',name:'Carrot poriyal',notes:'Grated carrot with coconut & mustard'},
+    {course:'Fry / Papad',name:'Appalam (fried)',notes:'Crispy papad served alongside'},
+    {course:'Pickle',name:'Manga urugai',notes:'Raw mango pickle'},
+    {course:'Rice (2nd)',name:'Plain rice',notes:'With rasam or sambar'},
+    {course:'Finale',name:'Thayir sadam (curd rice)',notes:'With mango pickle — closes the meal'},
+    {course:'Sweet',name:'Mysore Pak',notes:'Traditional ghee-based sweet'},
+    {course:'Sweet',name:'Laddu (besan)',notes:'Homemade or store-bought'},
+    {course:'Finish',name:'Tamboolam',notes:'Betel leaf, areca nut, small banana'},
+  ]},
+  {section:'🌇 Evening Snacks — Sat Jun 13 (~4 PM)',items:[
+    {course:'Snack',name:'Bajji / Bonda',notes:'Potato bajji or onion bajji with green chutney'},
+    {course:'Snack',name:'Murukku & mixture',notes:'Assorted crispy savory snacks'},
+    {course:'Beverage',name:'Filter coffee',notes:'Strong South Indian — decoction method'},
+    {course:'Sweet',name:'Assorted sweets',notes:'Remaining Mysore Pak, Laddu, Kesari'},
+  ]},
+];
+
+const SAMAGRI_LIST=[
+  'Flowers: jasmine, marigold, lotus — fresh on the day',
+  'Banana bunch, coconuts, assorted fruits, betel leaves & areca nut',
+  'Panchamrit: milk, curd, honey, ghee, sugar (for abhishekam)',
+  'Turmeric, kumkum, sandal paste, vibhuti',
+  'Camphor, incense sticks, lamp wicks, sesame oil',
+  'Homam: sesame seeds, rice, ghee, samidha (wood sticks)',
+  'Dakshina envelopes (cash) for each Brahmana',
+  'New veshti + angavastram as gift-vastra for each Brahmana',
+  'Tamboolam: betel leaf, areca nut, small fruit — for each priest',
+];
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STATE — loaded from localStorage (cloud sync happens async on init)
+// ═══════════════════════════════════════════════════════════════════════
+const STATE={
+  tasks:      DB.lsGet('tasks')      ?? JSON.parse(JSON.stringify(SEED.tasks)),
+  guests:     DB.lsGet('guests')     ?? JSON.parse(JSON.stringify(SEED.guests)),
+  schedule:   DB.lsGet('schedule')   ?? JSON.parse(JSON.stringify(SEED.schedule)),
+  shopping:   DB.lsGet('shopping')   ?? JSON.parse(JSON.stringify(SEED.shopping)),
+  budget:     DB.lsGet('budget')     ?? JSON.parse(JSON.stringify(SEED.budget)),
+  cleaning:   DB.lsGet('cleaning')   ?? JSON.parse(JSON.stringify(SEED.cleaning)),
+  brahm:      DB.lsGet('brahm')      ?? JSON.parse(JSON.stringify(SEED.brahm)),
+  foodStatus: DB.lsGet('foodStatus') ?? {},
+};
+
+// ── Persistence helpers ───────────────────────────────────────────────
+function lsSave(key){ DB.lsSet(key, STATE[key]); }
+function nextId(arr){ return arr.length ? Math.max(...arr.map(x=>x.id))+1 : 1; }
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  APP — navigation, modal, toast, theme, sync banner
+// ═══════════════════════════════════════════════════════════════════════
+const APP={
+  currentView:'dashboard',
+  syncStatus:'local', // 'local' | 'syncing' | 'synced' | 'error'
+
+  navigate(view){
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+    const el=document.getElementById('view-'+view);
+    if(!el) return;
+    el.classList.add('active');
+    document.querySelectorAll('[data-view="'+view+'"]').forEach(b=>b.classList.add('active'));
+    this.currentView=view;
+    const R={dashboard:DASHBOARD.render,tasks:TASKS.render,schedule:()=>SCHEDULE.render(),
+             guests:GUESTS.render,shopping:SHOPPING.render,brahmanas:BRAHM.render,
+             food:FOOD.render,cleaning:CLEANING.render,budget:BUDGET.render,
+             report:REPORT.render,youtube:YOUTUBE.render,settings:SETTINGS.render};
+    if(R[view]) R[view]();
+    this.updateBadges();
+  },
+
+  updateBadges(){
+    const pT=STATE.tasks.filter(t=>t.status==='Pending'||t.status==='WIP').length;
+    document.getElementById('nb-tasks').textContent=pT;
+    document.getElementById('nb-guests').textContent=STATE.guests.length;
+    document.getElementById('nb-shop').textContent=STATE.shopping.filter(s=>s.bought==='No').length;
+  },
+
+  openModal(type, data){
+    const def=MODAL_DEFS[type]; if(!def) return;
+    document.getElementById('modal-title').textContent=def.title;
+    document.getElementById('modal-body').innerHTML=def.body(data);
+    document.getElementById('modal-footer').innerHTML=def.footer(data);
+    document.getElementById('modal-overlay').classList.add('open');
+    setTimeout(()=>{const f=document.querySelector('#modal-body input,#modal-body select,#modal-body textarea');if(f)f.focus();},80);
+  },
+
+  closeModal(e){
+    if(!e||e.target===document.getElementById('modal-overlay'))
+      document.getElementById('modal-overlay').classList.remove('open');
+  },
+
+  toast(msg,type=''){
+    const c=document.getElementById('toast-container');
+    const t=document.createElement('div');
+    t.className='toast'+(type?' '+type:'');
+    t.innerHTML='<span>'+(type==='success'?'✓':type==='error'?'✕':'🙏')+'</span>'+msg;
+    c.appendChild(t);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
+    setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),400);},2600);
+  },
+
+  toggleTheme(){
+    const dark=document.documentElement.getAttribute('data-theme')==='dark';
+    document.documentElement.setAttribute('data-theme',dark?'':'dark');
+    DB.lsSet('theme',dark?'light':'dark');
+  },
+
+  setSyncStatus(s){
+    this.syncStatus=s;
+    const el=document.getElementById('sync-badge');
+    if(!el) return;
+    const m={local:['🔵','Local only',''],syncing:['🟡','Syncing…',''],synced:['🟢','Cloud synced',''],error:['🔴','Sync error','']};
+    const [ico,txt]=m[s]||m.local;
+    el.innerHTML=ico+' '+txt;
+  },
+
+  // Called after every write — syncs to Supabase in background
+  async bgSync(op, table, payload, id){
+    if(!DB.sbOk()) return;
+    this.setSyncStatus('syncing');
+    try{
+      if(op==='insert') await DB.cloudInsert(table, payload);
+      else if(op==='update') await DB.cloudUpdate(table, payload);
+      else if(op==='delete') await DB.cloudDelete(table, id);
+      this.setSyncStatus('synced');
+    }catch(e){
+      console.warn('bgSync error',e);
+      this.setSyncStatus('error');
+    }
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MODAL DEFINITIONS — title, body HTML, footer buttons
+// ═══════════════════════════════════════════════════════════════════════
+const CATS=['Ritual items','Shopping','Ritual','Puja','Hospitality','Facility','Venue',
+            'Guest Mgmt','Invitations','RSVP','Food','Dining','Cleaning','Decor','Gifts',
+            'Memories','Logistics','Cleanup','Other'];
+const PRIS=['Critical','High','Medium','Low','—'];
+const STATS=['Pending','WIP','Done','Blocked','Cancelled'];
+const LOCS=['New Jersey','India','California','Virginia','Texas','Chicago','North Dakota',
+            'Singapore','Canada','Other USA'];
+const RSVPS=['—','Yes','No','Waiting'];
+const SHOP_CATS=['Ritual','Ritual/Jewelry','Attire','Puja','Dining','Groceries','Sweets','Venue','Decor','Gifts'];
+const SHOP_GRPS=['Ritual / Attire','Puja Samagri','Food & Groceries','Venue & Logistics'];
+
+function selOpts(opts,val){return opts.map(o=>`<option${val===o?' selected':''}>${esc(o)}</option>`).join('');}
+
+const MODAL_DEFS={
+  'add-task':{
+    title:'➕ Add New Task',
+    body:()=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Task Description *</label><input id="m-task" type="text" placeholder="Describe the task…"/></div>
+      <div class="fg"><label>Category</label><select id="m-cat">${selOpts(CATS,'Puja')}</select></div>
+      <div class="fg"><label>Owner</label><input id="m-owner" type="text" placeholder="Srinivasan / Harini…"/></div>
+      <div class="fg"><label>Priority</label><select id="m-pri">${selOpts(PRIS,'High')}</select></div>
+      <div class="fg"><label>Status</label><select id="m-sta">${selOpts(STATS,'Pending')}</select></div>
+      <div class="fg fg-full"><label>Notes / Due Date</label><input id="m-notes" type="text" placeholder="Notes or due date…"/></div>
+    </div>`,
+    footer:()=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="TASKS.add()">✓ Save Task</button>`,
+  },
+  'edit-task':{
+    title:'✏️ Edit Task',
+    body:(t)=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Task Description *</label><input id="m-task" type="text" value="${esc(t.task)}"/></div>
+      <div class="fg"><label>Category</label><select id="m-cat">${selOpts(CATS,t.cat)}</select></div>
+      <div class="fg"><label>Owner</label><input id="m-owner" type="text" value="${esc(t.owner||'')}"/></div>
+      <div class="fg"><label>Priority</label><select id="m-pri">${selOpts(PRIS,t.priority)}</select></div>
+      <div class="fg"><label>Status</label><select id="m-sta">${selOpts(STATS,t.status)}</select></div>
+      <div class="fg fg-full"><label>Notes / Due Date</label><input id="m-notes" type="text" value="${esc(t.notes||'')}"/></div>
+    </div>`,
+    footer:(t)=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                 <button class="btn btn-danger btn-sm" onclick="TASKS.del(${t.id},true)">🗑 Delete</button>
+                 <button class="btn btn-primary" onclick="TASKS.update(${t.id})">✓ Save Changes</button>`,
+  },
+  'add-guest':{
+    title:'👤 Add Guest',
+    body:()=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Full Name *</label><input id="m-name" type="text" placeholder="Full name…"/></div>
+      <div class="fg fg-full"><label>Relationship</label><input id="m-rel" type="text" placeholder="Friend / Family / Cousin…"/></div>
+      <div class="fg"><label>Phone</label><input id="m-phone" type="tel" placeholder="+1 xxx xxx xxxx"/></div>
+      <div class="fg"><label># People Coming</label><input id="m-coming" type="number" value="1" min="0" max="20"/></div>
+      <div class="fg"><label>Location</label><select id="m-loc">${selOpts(LOCS,'New Jersey')}</select></div>
+      <div class="fg"><label>RSVP Status</label><select id="m-rsvp">${selOpts(RSVPS,'—')}</select></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" placeholder="Any notes…"/></div>
+    </div>`,
+    footer:()=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="GUESTS.add()">✓ Add Guest</button>`,
+  },
+  'edit-guest':{
+    title:'✏️ Edit Guest',
+    body:(g)=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Full Name *</label><input id="m-name" type="text" value="${esc(g.name)}"/></div>
+      <div class="fg fg-full"><label>Relationship</label><input id="m-rel" type="text" value="${esc(g.rel||'')}"/></div>
+      <div class="fg"><label>Phone</label><input id="m-phone" type="tel" value="${esc(g.phone||'')}"/></div>
+      <div class="fg"><label># People Coming</label><input id="m-coming" type="number" value="${g.coming||1}" min="0" max="20"/></div>
+      <div class="fg"><label>Called?</label><select id="m-called"><option${g.called==='Yes'?' selected':''}>Yes</option><option${g.called==='No'?' selected':''}>No</option></select></div>
+      <div class="fg"><label>RSVP Status</label><select id="m-rsvp">${selOpts(RSVPS,g.rsvp)}</select></div>
+      <div class="fg"><label>Location</label><select id="m-loc">${selOpts(LOCS,g.location)}</select></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" value="${esc(g.notes||'')}"/></div>
+    </div>`,
+    footer:(g)=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                 <button class="btn btn-danger btn-sm" onclick="GUESTS.del(${g.id},true)">🗑 Delete</button>
+                 <button class="btn btn-primary" onclick="GUESTS.update(${g.id})">✓ Save Changes</button>`,
+  },
+  'add-shop':{
+    title:'🛒 Add Shopping Item',
+    body:()=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Item Name *</label><input id="m-item" type="text" placeholder="Item description…"/></div>
+      <div class="fg"><label>Category</label><select id="m-cat">${selOpts(SHOP_CATS,'Puja')}</select></div>
+      <div class="fg"><label>Group</label><select id="m-grp">${selOpts(SHOP_GRPS,'Puja Samagri')}</select></div>
+      <div class="fg"><label>Qty</label><input id="m-qty" type="number" value="1" min="0"/></div>
+      <div class="fg"><label>Unit</label><input id="m-unit" type="text" placeholder="pcs / lb / pack…"/></div>
+      <div class="fg"><label>Assigned To</label><input id="m-assigned" type="text" placeholder="Harini / Srinivasan…"/></div>
+      <div class="fg"><label>Est. Cost ($)</label><input id="m-cost" type="number" value="0" min="0" step="0.01"/></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" placeholder="Notes…"/></div>
+    </div>`,
+    footer:()=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="SHOPPING.add()">✓ Add Item</button>`,
+  },
+  'edit-shop':{
+    title:'✏️ Edit Shopping Item',
+    body:(i)=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Item Name *</label><input id="m-item" type="text" value="${esc(i.item)}"/></div>
+      <div class="fg"><label>Category</label><select id="m-cat">${selOpts(SHOP_CATS,i.cat)}</select></div>
+      <div class="fg"><label>Group</label><select id="m-grp">${selOpts(SHOP_GRPS,i.grp)}</select></div>
+      <div class="fg"><label>Qty</label><input id="m-qty" type="number" value="${i.qty||1}" min="0"/></div>
+      <div class="fg"><label>Unit</label><input id="m-unit" type="text" value="${esc(i.unit||'')}"/></div>
+      <div class="fg"><label>Assigned To</label><input id="m-assigned" type="text" value="${esc(i.assigned||'')}"/></div>
+      <div class="fg"><label>Est. Cost ($)</label><input id="m-cost" type="number" value="${i.estCost||0}" min="0" step="0.01"/></div>
+      <div class="fg"><label>Status</label><select id="m-bought"><option${i.bought==='No'?' selected':''}>No</option><option${i.bought==='Yes'?' selected':''}>Yes</option><option${i.bought==='Researching'?' selected':''}>Researching</option></select></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" value="${esc(i.notes||'')}"/></div>
+    </div>`,
+    footer:(i)=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                 <button class="btn btn-danger btn-sm" onclick="SHOPPING.del(${i.id},true)">🗑 Delete</button>
+                 <button class="btn btn-primary" onclick="SHOPPING.update(${i.id})">✓ Save Changes</button>`,
+  },
+  'add-schedule':{
+    title:'📅 Add Schedule Event',
+    body:()=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Event Name *</label><input id="m-event" type="text" placeholder="Event description…"/></div>
+      <div class="fg"><label>Day</label><select id="m-day"><option value="prev">Previous Day (Fri Jun 12)</option><option value="cel">Celebration Day (Sat Jun 13)</option></select></div>
+      <div class="fg"><label>Start Time</label><input id="m-start" type="text" placeholder="9:00 AM"/></div>
+      <div class="fg"><label>End Time</label><input id="m-end" type="text" placeholder="10:00 AM"/></div>
+      <div class="fg"><label>Location</label><input id="m-loc" type="text" placeholder="Puja Room…"/></div>
+      <div class="fg"><label>Responsible</label><input id="m-resp" type="text" placeholder="Family / Brahmanas…"/></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" placeholder="Notes…"/></div>
+    </div>`,
+    footer:()=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="SCHEDULE.add()">✓ Add Event</button>`,
+  },
+  'edit-schedule':{
+    title:'✏️ Edit Schedule Event',
+    body:(s)=>`<div class="fgrid">
+      <div class="fg fg-full"><label>Event Name *</label><input id="m-event" type="text" value="${esc(s.event)}"/></div>
+      <div class="fg"><label>Day</label><select id="m-day"><option value="prev"${s.day==='prev'?' selected':''}>Previous Day (Fri Jun 12)</option><option value="cel"${s.day==='cel'?' selected':''}>Celebration Day (Sat Jun 13)</option></select></div>
+      <div class="fg"><label>Start Time</label><input id="m-start" type="text" value="${esc(s.start||'')}"/></div>
+      <div class="fg"><label>End Time</label><input id="m-end" type="text" value="${esc(s.end||'')}"/></div>
+      <div class="fg"><label>Location</label><input id="m-loc" type="text" value="${esc(s.location||'')}"/></div>
+      <div class="fg"><label>Responsible</label><input id="m-resp" type="text" value="${esc(s.responsible||'')}"/></div>
+      <div class="fg fg-full"><label>Notes</label><input id="m-notes" type="text" value="${esc(s.notes||'')}"/></div>
+    </div>`,
+    footer:(s)=>`<button class="btn btn-ghost btn-sm" onclick="APP.closeModal()">Cancel</button>
+                 <button class="btn btn-danger btn-sm" onclick="SCHEDULE.del(${s.id},true)">🗑 Delete</button>
+                 <button class="btn btn-primary" onclick="SCHEDULE.update(${s.id})">✓ Save Changes</button>`,
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════
+const DASHBOARD={
+  render(){
+    const t=STATE.tasks, g=STATE.guests, s=STATE.shopping;
+    const done=t.filter(x=>x.status==='Done').length;
+    const pend=t.filter(x=>x.status==='Pending').length;
+    const people=g.reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const attending=g.filter(x=>x.location!=='India').reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const rsvpY=g.filter(x=>x.rsvp==='Yes').length;
+    const shopPend=s.filter(x=>x.bought==='No').length;
+    const shopDone=s.filter(x=>x.bought==='Yes').length;
+    const act=STATE.budget.reduce((n,x)=>n+(parseFloat(x.actual)||0),0);
+    const est=STATE.budget.reduce((n,x)=>n+(parseFloat(x.est)||0),0);
+    const target=new Date('2026-06-13T09:00:00');
+    const daysLeft=Math.max(0,Math.ceil((target-new Date())/864e5));
+
+    document.getElementById('dash-stats').innerHTML=[
+      {icon:'📅',val:daysLeft,label:'Days to Event',sub:'Jun 13, 2026',a:'accent-gold'},
+      {icon:'✅',val:done+'/'+t.length,label:'Tasks Done',sub:pend+' pending',a:'accent-green'},
+      {icon:'👥',val:g.length,label:'Guest Families',sub:people+' total people',a:'accent-blue'},
+      {icon:'✉️',val:rsvpY,label:'RSVP Yes',sub:attending+' attending',a:'accent-saffron'},
+      {icon:'🛒',val:shopPend,label:'Items to Buy',sub:shopDone+' bought ✓',a:'accent-gold'},
+      {icon:'💰',val:'$'+act.toLocaleString(),label:'Spent',sub:'of $'+est.toLocaleString()+' est.',a:'accent-saffron'},
+      {icon:'🕉️',val:2,label:'Brahmanas',sub:'Thenkalai style',a:'accent-gold'},
+      {icon:'🇮🇳',val:g.filter(x=>x.location==='India').length,label:'India Livestream',sub:'YouTube Unlisted',a:'accent-blue'},
+    ].map(s=>`<div class="stat ${s.a}"><div class="s-icon">${s.icon}</div><div class="s-val">${s.val}</div><div class="s-label">${s.label}</div><div class="s-sub">${s.sub}</div></div>`).join('');
+
+    const highs=t.filter(x=>(x.priority==='Critical'||x.priority==='High')&&x.status!=='Done'&&x.status!=='Cancelled');
+    document.getElementById('dash-highpri').innerHTML=highs.length
+      ?`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Task</th><th>Cat</th><th>Owner</th><th>Status</th><th></th></tr></thead><tbody>${
+        highs.slice(0,10).map(t=>`<tr>
+          <td><strong>${esc(t.task)}</strong></td>
+          <td><span style="font-size:11px;color:var(--c-muted);">${t.cat}</span></td>
+          <td>${esc(t.owner||'—')}</td>
+          <td>${H.sta(t.status)}</td>
+          <td><button class="btn btn-xs btn-ghost" onclick="APP.openModal('edit-task',STATE.tasks.find(x=>x.id===${t.id}))">✏️</button></td>
+        </tr>`).join('')
+      }</tbody></table></div>`
+      :`<div class="alert alert-success">✅ No High/Critical pending tasks!</div>`;
+
+    const upcoming=STATE.schedule.slice(0,3);
+    document.getElementById('dash-schedule').innerHTML=upcoming.map(e=>`
+      <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--c-border);align-items:flex-start;">
+        <div style="font-size:18px;">${e.day==='prev'?'🌙':'☀️'}</div>
+        <div><div style="font-size:13px;font-weight:600;">${esc(e.event)}</div>
+        <div style="font-size:11px;color:var(--c-muted);">${e.start}${e.end?' – '+e.end:''} · ${esc(e.location)}</div></div>
+      </div>`).join('');
+
+    let cd=0,ct=0;
+    STATE.cleaning.forEach(a=>a.tasks.forEach(t=>{ct++;if(t.done)cd++;}));
+    const pct=ct?Math.round(cd/ct*100):0;
+    document.getElementById('dash-cleaning').innerHTML=`
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px;">
+        <span>${cd}/${ct} tasks done</span><span style="font-weight:700;">${pct}%</span>
+      </div>
+      <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%"></div></div>
+      <div style="margin-top:10px;font-size:12px;color:var(--c-muted);">
+        ${ct-cd>0?`⚠️ ${ct-cd} cleaning tasks remaining`:'✅ All cleaning done!'}
+      </div>`;
+  }
+};
+
+// ── Badge helpers ──────────────────────────────────────────────────────
+const H={
+  pri(p){const m={Critical:'b-critical',High:'b-high',Medium:'b-medium',Low:'b-low','—':'b-none'};return`<span class="badge ${m[p]||'b-none'}">${p||'—'}</span>`},
+  sta(s){const m={Pending:'b-pending',WIP:'b-wip',Done:'b-done',Blocked:'b-blocked',Cancelled:'b-cancelled'};return`<span class="badge ${m[s]||'b-pending'}">${s}</span>`},
+  rsvp(r){const m={Yes:'b-yes',No:'b-no',Waiting:'b-waiting','—':'b-none'};return`<span class="badge ${m[r]||'b-none'}">${r}</span>`},
+  loc(l){const m={India:'b-india','New Jersey':'b-nj'};return`<span class="badge ${m[l]||'b-none'}">${esc(l)}</span>`},
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TASKS — full CRUD with Supabase sync
+// ═══════════════════════════════════════════════════════════════════════
+const TASKS={
+  render(){
+    const sf=document.getElementById('tf-status')?.value||'';
+    const pf=document.getElementById('tf-priority')?.value||'';
+    const cf=document.getElementById('tf-cat')?.value||'';
+    const se=(document.getElementById('tf-search')?.value||'').toLowerCase();
+    let list=STATE.tasks;
+    if(sf) list=list.filter(t=>t.status===sf);
+    if(pf) list=list.filter(t=>t.priority===pf);
+    if(cf) list=list.filter(t=>t.cat===cf);
+    if(se) list=list.filter(t=>t.task.toLowerCase().includes(se)||(t.owner||'').toLowerCase().includes(se));
+
+    document.getElementById('tasks-tbody').innerHTML=list.length?list.map(t=>`
+      <tr>
+        <td style="font-size:11px;color:var(--c-muted);">${t.id}</td>
+        <td style="max-width:220px;"><span style="font-weight:500;">${esc(t.task)}</span></td>
+        <td><span style="font-size:11.5px;color:var(--c-muted);">${t.cat}</span></td>
+        <td style="font-size:12px;">${esc(t.owner||'—')}</td>
+        <td>${H.pri(t.priority)}</td>
+        <td>${H.sta(t.status)}</td>
+        <td style="font-size:11.5px;color:var(--c-muted);max-width:160px;">${esc(t.notes||'')}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-xs btn-ghost" onclick="APP.openModal('edit-task',STATE.tasks.find(x=>x.id===${t.id}))" title="Edit">✏️</button>
+          <button class="btn btn-xs btn-danger" onclick="TASKS.del(${t.id})" title="Delete">🗑</button>
+        </td>
+      </tr>`).join(''):`<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--c-muted);">No tasks match the current filter.</td></tr>`;
+  },
+
+  add(){
+    const task=document.getElementById('m-task').value.trim();
+    if(!task){APP.toast('Task description required','error');return;}
+    const row={
+      id:nextId(STATE.tasks), task,
+      cat:   document.getElementById('m-cat').value,
+      owner: document.getElementById('m-owner').value.trim(),
+      priority:document.getElementById('m-pri').value,
+      status:  document.getElementById('m-sta').value,
+      notes:   document.getElementById('m-notes').value.trim(),
+    };
+    STATE.tasks.push(row);
+    lsSave('tasks');
+    APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Task added','success');
+    APP.bgSync('insert','tasks',row);
+  },
+
+  update(id){
+    const t=STATE.tasks.find(x=>x.id===id); if(!t) return;
+    const task=document.getElementById('m-task').value.trim();
+    if(!task){APP.toast('Task description required','error');return;}
+    t.task    =task;
+    t.cat     =document.getElementById('m-cat').value;
+    t.owner   =document.getElementById('m-owner').value.trim();
+    t.priority=document.getElementById('m-pri').value;
+    t.status  =document.getElementById('m-sta').value;
+    t.notes   =document.getElementById('m-notes').value.trim();
+    lsSave('tasks');
+    APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Task updated','success');
+    APP.bgSync('update','tasks',t);
+  },
+
+  del(id, fromModal=false){
+    if(!confirm('Delete this task? This cannot be undone.')) return;
+    STATE.tasks=STATE.tasks.filter(x=>x.id!==id);
+    lsSave('tasks');
+    if(fromModal) APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Task deleted');
+    APP.bgSync('delete','tasks',null,id);
+  },
+
+  // Inline quick-patch (priority/status dropdowns in table)
+  patch(id,field,val){
+    const t=STATE.tasks.find(x=>x.id===id); if(!t) return;
+    t[field]=val;
+    lsSave('tasks');
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Saved','success');
+    APP.bgSync('update','tasks',t);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GUESTS — full CRUD with Supabase sync
+// ═══════════════════════════════════════════════════════════════════════
+const GUESTS={
+  render(){
+    const se=(document.getElementById('gf-search')?.value||'').toLowerCase();
+    const rf=document.getElementById('gf-rsvp')?.value||'';
+    const lf=document.getElementById('gf-loc')?.value||'';
+    let list=STATE.guests;
+    if(se) list=list.filter(g=>g.name.toLowerCase().includes(se)||(g.rel||'').toLowerCase().includes(se)||(g.phone||'').includes(se));
+    if(rf) list=list.filter(g=>g.rsvp===rf);
+    if(lf) list=list.filter(g=>g.location===lf);
+
+    const total=STATE.guests.reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const attend=STATE.guests.filter(g=>g.location!=='India').reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const rsvpY=STATE.guests.filter(g=>g.rsvp==='Yes').length;
+    const india=STATE.guests.filter(g=>g.location==='India').length;
+    document.getElementById('guest-summary').innerHTML=
+      `Showing <strong>${list.length}</strong> of <strong>${STATE.guests.length}</strong> families &nbsp;|&nbsp;
+       Total people: <strong>${total}</strong> &nbsp;|&nbsp;
+       Attending (non-India): <strong>${attend}</strong> &nbsp;|&nbsp;
+       RSVP Yes: <strong>${rsvpY}</strong> &nbsp;|&nbsp;
+       India (livestream): <strong>${india}</strong>`;
+
+    document.getElementById('guests-tbody').innerHTML=list.length?list.map(g=>`
+      <tr style="${g.location==='India'?'background:rgba(139,0,0,.03)':''}">
+        <td style="font-size:11px;color:var(--c-muted);">${g.id}</td>
+        <td style="font-weight:600;white-space:nowrap;">${esc(g.name)}${g.location==='India'?' 🇮🇳':''}</td>
+        <td style="font-size:12px;color:var(--c-muted);">${esc(g.rel||'')}</td>
+        <td style="font-size:12px;white-space:nowrap;">
+          ${g.phone?`<a href="tel:${esc(g.phone)}" style="color:var(--c-maroon);">${esc(g.phone)}</a>`:'—'}
+        </td>
+        <td style="text-align:center;font-weight:600;">${g.coming||0}</td>
+        <td><span class="badge ${g.called==='Yes'?'b-done':'b-pending'}">${g.called||'No'}</span></td>
+        <td>${H.rsvp(g.rsvp)}</td>
+        <td>${H.loc(g.location)}</td>
+        <td style="font-size:11.5px;max-width:140px;color:var(--c-muted);">${esc(g.notes||'')}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-xs btn-ghost" onclick="APP.openModal('edit-guest',STATE.guests.find(x=>x.id===${g.id}))" title="Edit">✏️</button>
+          <button class="btn btn-xs btn-danger" onclick="GUESTS.del(${g.id})" title="Delete">🗑</button>
+        </td>
+      </tr>`).join(''):`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--c-muted);">No guests match the current filter.</td></tr>`;
+  },
+
+  add(){
+    const name=document.getElementById('m-name').value.trim();
+    if(!name){APP.toast('Name required','error');return;}
+    const row={
+      id:nextId(STATE.guests), name,
+      rel:      document.getElementById('m-rel').value.trim(),
+      phone:    document.getElementById('m-phone').value.trim(),
+      coming:   parseInt(document.getElementById('m-coming').value)||1,
+      called:   'No',
+      rsvp:     document.getElementById('m-rsvp').value,
+      location: document.getElementById('m-loc').value,
+      notes:    document.getElementById('m-notes').value.trim(),
+    };
+    STATE.guests.push(row);
+    lsSave('guests');
+    APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Guest added','success');
+    APP.bgSync('insert','guests',row);
+  },
+
+  update(id){
+    const g=STATE.guests.find(x=>x.id===id); if(!g) return;
+    const name=document.getElementById('m-name').value.trim();
+    if(!name){APP.toast('Name required','error');return;}
+    g.name    =name;
+    g.rel     =document.getElementById('m-rel').value.trim();
+    g.phone   =document.getElementById('m-phone').value.trim();
+    g.coming  =parseInt(document.getElementById('m-coming').value)||1;
+    g.called  =document.getElementById('m-called').value;
+    g.rsvp    =document.getElementById('m-rsvp').value;
+    g.location=document.getElementById('m-loc').value;
+    g.notes   =document.getElementById('m-notes').value.trim();
+    lsSave('guests');
+    APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Guest updated','success');
+    APP.bgSync('update','guests',g);
+  },
+
+  del(id, fromModal=false){
+    if(!confirm('Remove this guest? This cannot be undone.')) return;
+    STATE.guests=STATE.guests.filter(x=>x.id!==id);
+    lsSave('guests');
+    if(fromModal) APP.closeModal();
+    this.render();
+    DASHBOARD.render();
+    APP.updateBadges();
+    APP.toast('Guest removed');
+    APP.bgSync('delete','guests',null,id);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SCHEDULE — full CRUD
+// ═══════════════════════════════════════════════════════════════════════
+const SCHEDULE={
+  _f:'all',
+  filter(f){this._f=f;this.render();},
+  render(){
+    let list=STATE.schedule;
+    if(this._f==='prev') list=list.filter(s=>s.day==='prev');
+    if(this._f==='cel')  list=list.filter(s=>s.day==='cel');
+    const labels={
+      prev:'🌙 Previous Evening — Friday, June 12, 2026 (Home, 216 Hampshire Dr, Plainsboro NJ)',
+      cel: '☀️ Celebration Day — Saturday, June 13, 2026 (Sri Vari Balaji Koyil, Somerset NJ)',
+    };
+    let html='',last='';
+    list.forEach(s=>{
+      if(s.day!==last){html+=`<div class="tl-group-label">${labels[s.day]}</div>`;last=s.day;}
+      html+=`<div class="tl-item ${s.day}">
+        <div class="tl-time">⏰ ${esc(s.start)}${s.end?' – '+esc(s.end):''}</div>
+        <div class="tl-title">${esc(s.event)}</div>
+        <div class="tl-meta">📍 ${esc(s.location)} · 👤 ${esc(s.responsible)}</div>
+        ${s.notes?`<div class="tl-meta" style="font-style:italic;margin-top:2px;">📝 ${esc(s.notes)}</div>`:''}
+        <div style="display:flex;gap:6px;margin-top:7px;">
+          <button class="btn btn-xs btn-ghost" onclick="APP.openModal('edit-schedule',STATE.schedule.find(x=>x.id===${s.id}))">✏️ Edit</button>
+          <button class="btn btn-xs btn-danger" onclick="SCHEDULE.del(${s.id})">🗑 Remove</button>
+        </div>
+      </div>`;
+    });
+    document.getElementById('schedule-tl').innerHTML=html||'<div class="empty"><div class="e-icon">📅</div><p>No events.</p></div>';
+  },
+  add(){
+    const event=document.getElementById('m-event').value.trim();
+    if(!event){APP.toast('Event name required','error');return;}
+    const row={id:nextId(STATE.schedule),day:document.getElementById('m-day').value,event,
+      start:document.getElementById('m-start').value,end:document.getElementById('m-end').value,
+      location:document.getElementById('m-loc').value,responsible:document.getElementById('m-resp').value,
+      notes:document.getElementById('m-notes').value};
+    STATE.schedule.push(row);
+    lsSave('schedule');
+    APP.closeModal();this.render();APP.toast('Event added','success');
+    APP.bgSync('insert','schedule',row);
+  },
+  update(id){
+    const s=STATE.schedule.find(x=>x.id===id);if(!s)return;
+    const event=document.getElementById('m-event').value.trim();
+    if(!event){APP.toast('Event name required','error');return;}
+    s.event=event;s.day=document.getElementById('m-day').value;
+    s.start=document.getElementById('m-start').value;s.end=document.getElementById('m-end').value;
+    s.location=document.getElementById('m-loc').value;s.responsible=document.getElementById('m-resp').value;
+    s.notes=document.getElementById('m-notes').value;
+    lsSave('schedule');
+    APP.closeModal();this.render();APP.toast('Event updated','success');
+    APP.bgSync('update','schedule',s);
+  },
+  del(id,fromModal=false){
+    if(!confirm('Remove this event?'))return;
+    STATE.schedule=STATE.schedule.filter(x=>x.id!==id);
+    lsSave('schedule');
+    if(fromModal)APP.closeModal();
+    this.render();APP.toast('Removed');
+    APP.bgSync('delete','schedule',null,id);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SHOPPING — full CRUD
+// ═══════════════════════════════════════════════════════════════════════
+const SHOPPING={
+  render(){
+    const bf=document.getElementById('sf-bought')?.value||'';
+    const cf=document.getElementById('sf-cat')?.value||'';
+    const se=(document.getElementById('sf-search')?.value||'').toLowerCase();
+    let list=STATE.shopping;
+    if(bf) list=list.filter(s=>s.bought===bf);
+    if(cf) list=list.filter(s=>s.cat===cf);
+    if(se) list=list.filter(s=>s.item.toLowerCase().includes(se));
+
+    const groups={};
+    list.forEach(s=>{(groups[s.grp]=groups[s.grp]||[]).push(s);});
+
+    let html='';
+    for(const[grp,items]of Object.entries(groups)){
+      const tot=items.reduce((n,i)=>n+(parseFloat(i.estCost)||0),0);
+      html+=`<div style="margin-bottom:16px;">
+        <div style="background:var(--c-bg2);padding:8px 14px;border-radius:var(--r-sm) var(--r-sm) 0 0;display:flex;justify-content:space-between;">
+          <span style="font-family:var(--font-display);font-size:12px;color:var(--c-maroon);letter-spacing:.5px;">📦 ${esc(grp)}</span>
+          <span style="font-size:12px;font-weight:700;color:var(--c-saffron);">Est: $${tot.toLocaleString()}</span>
+        </div>
+        <div class="tbl-wrap" style="border-radius:0 0 var(--r-sm) var(--r-sm);">
+          <table class="tbl"><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Assigned</th><th>Est $</th><th>Status</th><th>Notes</th><th></th></tr></thead>
+          <tbody>${items.map(i=>`<tr>
+            <td style="font-size:11px;color:var(--c-muted);">${i.id}</td>
+            <td style="font-weight:500;">${esc(i.item)}</td>
+            <td style="font-size:12px;">${i.qty} ${esc(i.unit||'')}</td>
+            <td style="font-size:12px;">${esc(i.assigned||'—')}</td>
+            <td style="font-size:12px;">$${(i.estCost||0).toLocaleString()}</td>
+            <td><select class="inline-input" style="min-width:100px;" onchange="SHOPPING.patch(${i.id},'bought',this.value)">
+              <option${i.bought==='No'?' selected':''}>No</option>
+              <option${i.bought==='Yes'?' selected':''}>Yes</option>
+              <option${i.bought==='Researching'?' selected':''}>Researching</option>
+            </select></td>
+            <td style="font-size:11.5px;color:var(--c-muted);">${esc(i.notes||'')}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-xs btn-ghost" onclick="APP.openModal('edit-shop',STATE.shopping.find(x=>x.id===${i.id}))" title="Edit">✏️</button>
+              <button class="btn btn-xs btn-danger" onclick="SHOPPING.del(${i.id})" title="Delete">🗑</button>
+            </td>
+          </tr>`).join('')}</tbody></table>
+        </div>
+      </div>`;
+    }
+    document.getElementById('shopping-groups').innerHTML=html||'<div class="empty"><div class="e-icon">🛒</div><p>No items match filter.</p></div>';
+
+    const totEst=STATE.shopping.reduce((n,i)=>n+(parseFloat(i.estCost)||0),0);
+    const totB=STATE.shopping.filter(i=>i.bought==='Yes').reduce((n,i)=>n+(parseFloat(i.estCost)||0),0);
+    const totP=STATE.shopping.filter(i=>i.bought==='No').reduce((n,i)=>n+(parseFloat(i.estCost)||0),0);
+    document.getElementById('shop-budget').innerHTML=`
+      <div class="bs-card"><div class="bs-val">$${totEst.toLocaleString()}</div><div class="bs-label">Total Estimated</div></div>
+      <div class="bs-card under"><div class="bs-val">$${totB.toLocaleString()}</div><div class="bs-label">Bought ✓</div></div>
+      <div class="bs-card over"><div class="bs-val">$${totP.toLocaleString()}</div><div class="bs-label">Pending</div></div>
+      <div class="bs-card"><div class="bs-val">${STATE.shopping.filter(i=>i.bought==='Yes').length}/${STATE.shopping.length}</div><div class="bs-label">Items Bought</div></div>`;
+  },
+  patch(id,field,val){
+    const s=STATE.shopping.find(x=>x.id===id);if(!s)return;
+    s[field]=val;lsSave('shopping');
+    APP.toast('Saved','success');APP.updateBadges();
+    APP.bgSync('update','shopping',s);
+  },
+  add(){
+    const item=document.getElementById('m-item').value.trim();
+    if(!item){APP.toast('Item name required','error');return;}
+    const row={id:nextId(STATE.shopping),item,
+      cat:document.getElementById('m-cat').value,grp:document.getElementById('m-grp').value,
+      qty:parseFloat(document.getElementById('m-qty').value)||1,unit:document.getElementById('m-unit').value,
+      assigned:document.getElementById('m-assigned').value,estCost:parseFloat(document.getElementById('m-cost').value)||0,
+      bought:'No',notes:document.getElementById('m-notes').value};
+    STATE.shopping.push(row);lsSave('shopping');
+    APP.closeModal();this.render();APP.toast('Item added','success');APP.updateBadges();
+    APP.bgSync('insert','shopping',row);
+  },
+  update(id){
+    const s=STATE.shopping.find(x=>x.id===id);if(!s)return;
+    const item=document.getElementById('m-item').value.trim();
+    if(!item){APP.toast('Item name required','error');return;}
+    s.item=item;s.cat=document.getElementById('m-cat').value;s.grp=document.getElementById('m-grp').value;
+    s.qty=parseFloat(document.getElementById('m-qty').value)||1;s.unit=document.getElementById('m-unit').value;
+    s.assigned=document.getElementById('m-assigned').value;s.estCost=parseFloat(document.getElementById('m-cost').value)||0;
+    s.bought=document.getElementById('m-bought').value;s.notes=document.getElementById('m-notes').value;
+    lsSave('shopping');APP.closeModal();this.render();APP.toast('Item updated','success');
+    APP.bgSync('update','shopping',s);
+  },
+  del(id,fromModal=false){
+    if(!confirm('Remove this item?'))return;
+    STATE.shopping=STATE.shopping.filter(x=>x.id!==id);
+    lsSave('shopping');if(fromModal)APP.closeModal();
+    this.render();APP.toast('Removed');APP.updateBadges();
+    APP.bgSync('delete','shopping',null,id);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BRAHMANAS
+// ═══════════════════════════════════════════════════════════════════════
+const BRAHM={
+  render(){
+    const configs=[
+      {slot:1,title:'Brahmana 1 — Lead Priest',sub:'Shashtiabdha Poorthi Puja + Sudharshana Homam · 9:00 AM – 11:00 AM'},
+      {slot:2,title:'Brahmana 2 — Associate Priest',sub:'Veda Parayanam (Prev. Evening) + Homam Support'},
+    ];
+    const fields=[
+      {key:'name',label:'Name / Title',type:'text',ph:'Priest name & title'},
+      {key:'phone',label:'Phone',type:'tel',ph:'+1 xxx xxx xxxx'},
+      {key:'whatsapp',label:'WhatsApp',type:'tel',ph:'+1 xxx xxx xxxx'},
+      {key:'address',label:'Address',type:'text',ph:'Address'},
+      {key:'dakshina',label:'Dakshina Amount ($)',type:'text',ph:'Agreed amount'},
+      {key:'special',label:'Special Requirements',type:'text',ph:'Any requirements'},
+    ];
+    document.getElementById('brahm-cards').innerHTML=configs.map(c=>{
+      const data=STATE.brahm.find(b=>b.slot===c.slot)||{};
+      return`<div class="brahm-card">
+        <div class="brahm-head"><div class="bh-title">🕉️ ${c.title}</div><div class="bh-sub">${c.sub}</div></div>
+        <div class="brahm-body">
+          <div class="fgrid">${fields.map(f=>`<div class="fg"><label>${f.label}</label>
+            <input type="${f.type}" id="b${c.slot}-${f.key}" value="${esc(data[f.key]||'')}" placeholder="${f.ph}"/></div>`).join('')}</div>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" onclick="BRAHM.save(${c.slot})">💾 Save Brahmana ${c.slot}</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+    document.getElementById('samagri-list').innerHTML=SAMAGRI_LIST.map(s=>`
+      <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--c-border);font-size:13px;">
+        <span style="color:var(--c-gold);font-size:14px;">✦</span><span>${esc(s)}</span>
+      </div>`).join('');
+  },
+  save(slot){
+    const fields=['name','phone','whatsapp','address','dakshina','special'];
+    let b=STATE.brahm.find(x=>x.slot===slot);
+    if(!b){b={id:slot,slot};STATE.brahm.push(b);}
+    fields.forEach(f=>{b[f]=document.getElementById(`b${slot}-${f}`).value;});
+    lsSave('brahm');
+    APP.toast('Brahmana '+slot+' saved','success');
+    APP.bgSync('update','brahmanas',b);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FOOD
+// ═══════════════════════════════════════════════════════════════════════
+const FOOD={
+  render(){
+    document.getElementById('food-menu').innerHTML=FOOD_MENU_DATA.map(sec=>`
+      <div class="menu-section">
+        <div class="menu-sec-title">${sec.section}</div>
+        ${sec.items.map(item=>{
+          const st=STATE.foodStatus[item.name]||'To prepare';
+          return`<div class="menu-item">
+            <div><div class="mi-name">${esc(item.name)}</div>
+            <div class="mi-detail">${esc(item.notes)}</div>
+            <div class="mi-course">${esc(item.course)}</div></div>
+            <div class="mi-status"><select onchange="FOOD.update('${item.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}',this.value)">
+              ${['To prepare','In progress','Ready','Ordered','Done ✓'].map(v=>`<option${st===v?' selected':''}>${v}</option>`).join('')}
+            </select></div>
+          </div>`;
+        }).join('')}
+      </div>`).join('');
+  },
+  update(name,val){
+    STATE.foodStatus[name]=val;
+    lsSave('foodStatus');
+    APP.toast('Updated','success');
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLEANING
+// ═══════════════════════════════════════════════════════════════════════
+const CLEANING={
+  render(){
+    let done=0,total=0;
+    STATE.cleaning.forEach(a=>a.tasks.forEach(t=>{total++;if(t.done)done++;}));
+    const pct=total?Math.round(done/total*100):0;
+    document.getElementById('clean-prog').style.width=pct+'%';
+    document.getElementById('clean-pct').textContent=`${done}/${total} (${pct}%)`;
+    document.getElementById('cleaning-list').innerHTML=STATE.cleaning.map((area,ai)=>{
+      const ad=area.tasks.filter(t=>t.done).length;
+      return`<div class="clean-area">
+        <div class="clean-area-head"><span>${esc(area.area)}</span><span style="font-size:11px;">${ad}/${area.tasks.length}</span></div>
+        ${area.tasks.map((task,ti)=>`
+          <div class="clean-item ${task.done?'done':''}" onclick="CLEANING.toggle(${ai},${ti})">
+            <input type="checkbox" ${task.done?'checked':''} onclick="event.stopPropagation();CLEANING.toggle(${ai},${ti})"/>
+            <span class="ci-task">${esc(task.task)}</span>
+            <span class="ci-by">${esc(task.by)}</span>
+          </div>`).join('')}
+      </div>`;
+    }).join('');
+  },
+  toggle(ai,ti){
+    STATE.cleaning[ai].tasks[ti].done=!STATE.cleaning[ai].tasks[ti].done;
+    lsSave('cleaning');this.render();
+  },
+  reset(){
+    if(!confirm('Reset all cleaning tasks to Pending?'))return;
+    STATE.cleaning.forEach(a=>a.tasks.forEach(t=>t.done=false));
+    lsSave('cleaning');this.render();APP.toast('Reset done');
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BUDGET
+// ═══════════════════════════════════════════════════════════════════════
+const BUDGET={
+  render(){
+    this._summary();
+    document.getElementById('budget-tbody').innerHTML=STATE.budget.map(b=>{
+      const gap=(parseFloat(b.est)||0)-(parseFloat(b.actual)||0);
+      return`<tr>
+        <td style="font-size:11px;color:var(--c-muted);">${b.id}</td>
+        <td>${esc(b.cat)}</td>
+        <td style="font-weight:600;">$${(b.est||0).toLocaleString()}</td>
+        <td><input class="inline-input" type="number" value="${b.actual||0}" style="width:85px;"
+          onblur="BUDGET.patch(${b.id},'actual',+this.value)"/></td>
+        <td style="font-weight:700;color:${gap>=0?'var(--c-green)':'var(--c-rust)'};">
+          ${gap>=0?'$'+gap.toLocaleString():'−$'+Math.abs(gap).toLocaleString()}</td>
+        <td><input class="inline-input" type="text" value="${esc(b.notes||'')}" style="min-width:120px;"
+          onblur="BUDGET.patch(${b.id},'notes',this.value)"/></td>
+        <td><button class="btn btn-xs btn-danger" onclick="BUDGET.del(${b.id})">🗑</button></td>
+      </tr>`;
+    }).join('');
+  },
+  _summary(){
+    const est=STATE.budget.reduce((n,b)=>n+(parseFloat(b.est)||0),0);
+    const act=STATE.budget.reduce((n,b)=>n+(parseFloat(b.actual)||0),0);
+    const gap=est-act;
+    document.getElementById('budget-summary').innerHTML=`
+      <div class="bs-card"><div class="bs-val">$${est.toLocaleString()}</div><div class="bs-label">Total Estimated</div></div>
+      <div class="bs-card"><div class="bs-val">$${act.toLocaleString()}</div><div class="bs-label">Total Actual</div></div>
+      <div class="bs-card ${gap>=0?'under':'over'}"><div class="bs-val">${gap>=0?'$'+gap.toLocaleString():'−$'+Math.abs(gap).toLocaleString()}</div><div class="bs-label">${gap>=0?'Remaining':'Over Budget'}</div></div>
+      <div class="bs-card"><div class="bs-val">${Math.round(act/est*100)||0}%</div><div class="bs-label">Spent of Est.</div></div>`;
+  },
+  patch(id,field,val){
+    const b=STATE.budget.find(x=>x.id===id);if(!b)return;
+    b[field]=val;lsSave('budget');this._summary();
+    APP.toast('Saved','success');APP.bgSync('update','budget',b);
+  },
+  save(){lsSave('budget');APP.toast('Budget saved ✓','success');},
+  addRow(){
+    STATE.budget.push({id:nextId(STATE.budget),cat:'New category',est:0,actual:0,notes:''});
+    lsSave('budget');this.render();APP.toast('Row added');
+  },
+  del(id){
+    if(!confirm('Remove this budget row?'))return;
+    STATE.budget=STATE.budget.filter(x=>x.id!==id);
+    lsSave('budget');this.render();APP.toast('Removed');
+    APP.bgSync('delete','budget',null,id);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  REPORT
+// ═══════════════════════════════════════════════════════════════════════
+const REPORT={
+  render(){
+    const t=STATE.tasks,g=STATE.guests,s=STATE.shopping;
+    const byS={};t.forEach(x=>{byS[x.status]=(byS[x.status]||0)+1;});
+    let cd=0,ct=0;STATE.cleaning.forEach(a=>a.tasks.forEach(t=>{ct++;if(t.done)cd++;}));
+
+    document.getElementById('report-kpi').innerHTML=[
+      {val:byS.Pending||0,label:'Tasks Pending',c:''},
+      {val:byS.WIP||0,label:'Tasks In Progress',c:''},
+      {val:byS.Done||0,label:'Tasks Done',c:'accent-green'},
+      {val:byS.Blocked||0,label:'Tasks Blocked',c:'accent-red'},
+      {val:s.filter(x=>x.bought==='No').length,label:'Shopping Pending',c:''},
+      {val:s.filter(x=>x.bought==='Yes').length,label:'Items Bought',c:'accent-green'},
+      {val:g.filter(x=>x.rsvp==='Yes').length,label:'RSVP Yes',c:'accent-blue'},
+      {val:`${cd}/${ct}`,label:'Cleaning Done',c:'accent-saffron'},
+    ].map(k=>`<div class="rk ${k.c||''}"><div class="rk-val">${k.val}</div><div class="rk-label">${k.label}</div></div>`).join('');
+
+    const priO={Critical:0,High:1,Medium:2,Low:3,'—':4};
+    const sorted=[...t].sort((a,b)=>(priO[a.priority]||4)-(priO[b.priority]||4));
+    document.getElementById('report-tasks').innerHTML=sorted.map(t=>`
+      <tr><td>${H.pri(t.priority)}</td><td>${esc(t.task)}</td><td>${esc(t.cat)}</td>
+      <td>${esc(t.owner||'—')}</td><td>${H.sta(t.status)}</td>
+      <td style="font-size:11.5px;color:var(--c-muted);">${esc(t.notes||'—')}</td></tr>`).join('');
+
+    document.getElementById('report-shop').innerHTML=s.map(i=>`
+      <tr><td>${esc(i.item)}</td><td>${esc(i.grp)}</td><td>${i.qty} ${esc(i.unit||'')}</td>
+      <td>${esc(i.assigned||'—')}</td><td>$${(i.estCost||0).toLocaleString()}</td>
+      <td><span class="badge ${i.bought==='Yes'?'b-done':i.bought==='Researching'?'b-wip':'b-pending'}">${i.bought}</span></td></tr>`).join('');
+
+    const total=g.reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const attend=g.filter(x=>x.location!=='India').reduce((n,x)=>n+(parseInt(x.coming)||0),0);
+    const byLoc={};g.forEach(x=>{byLoc[x.location]=(byLoc[x.location]||0)+1;});
+    document.getElementById('report-guests').innerHTML=`
+      <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:13px;margin-bottom:10px;">
+        <span>Families invited: <strong>${g.length}</strong></span>
+        <span>Total people: <strong>${total}</strong></span>
+        <span style="color:var(--c-green);">Attending (non-India): <strong>${attend}</strong></span>
+        <span style="color:var(--c-rust);">India (livestream): <strong>${g.filter(x=>x.location==='India').length}</strong></span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">${Object.entries(byLoc).map(([l,n])=>`<span class="badge ${l==='India'?'b-india':l==='New Jersey'?'b-nj':'b-none'}">${esc(l)}: ${n}</span>`).join('')}</div>`;
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  YOUTUBE
+// ═══════════════════════════════════════════════════════════════════════
+const YOUTUBE={
+  render(){
+    const saved=DB.lsGet('ytLink')||'';
+    if(saved){setTimeout(()=>{const el=document.getElementById('yt-link');if(el)el.value=saved;},50);}
+    const steps=[
+      {t:'Enable Live Streaming (2–3 days before — target Jun 10–11)',b:'Go to <strong>youtube.com</strong> on your laptop. Sign in with Gmail. Click the camera icon → "Go Live". <strong>First time only:</strong> account verification takes up to 24 hours — do this early!'},
+      {t:'Set Up the Stream',b:'Once activated, click "Go Live" → choose <strong>Webcam</strong> (simple, no software needed) or Stream (better quality).'},
+      {t:'Title & Privacy Settings',b:'Title: <em>"Srinivasan Shashtiabdha Poorthi"</em>. Set visibility to <strong>Unlisted</strong> — only people with the link can watch (not public).'},
+      {t:'Share Link to India Family',b:'Copy the YouTube link, paste it above, then tap <strong>Share via WhatsApp</strong> to send to all India family: Padma Chithi, Viji Chitappa, Venkatesan Chithia, Papa Chithia, Chinna Rangu, Satya, Srowthigal.'},
+      {t:'Test Stream (CRITICAL — do on Jun 10–11)',b:'Go live for 10 minutes. Ask a family member in India to click the link and confirm they can see and hear clearly. Troubleshoot before the actual day.'},
+      {t:'Day of Event — Stream Both Sessions',b:'Session 1: <strong>Fri Jun 12, 6:30 PM</strong> — Veda Parayanam + Divyaprabhandham Goshti (home).<br/>Session 2: <strong>Sat Jun 13, 9:00 AM</strong> — Puja + Sudharshana Homam + Lunch (Koyil).'},
+      {t:'Srikanth (Virginia) — Send Early',b:'<strong>+1-301-875-9088</strong> — out of state (Virginia). Send YouTube link + event details 2–3 weeks before so he can plan travel.'},
+    ];
+    document.getElementById('yt-steps').innerHTML=steps.map((s,i)=>`
+      <div class="yt-step"><div class="yt-num">${i+1}</div>
+      <div class="yt-content"><strong>${s.t}</strong><br/><span style="color:var(--c-muted);">${s.b}</span></div></div>`).join('');
+
+    const tips=[
+      {icon:'📷',t:'Camera',b:'Laptop webcam works. A USB webcam (~$25–30) gives much better picture.'},
+      {icon:'📍',t:'Positioning',b:'Place camera at height to see entire puja area + couple. Test in the test stream.'},
+      {icon:'🌐',t:'Internet',b:'Use wired ethernet if possible. A 5-hour stream needs stable connection.'},
+      {icon:'🔌',t:'Power',b:'Keep laptop plugged in — never run on battery for 5+ hours.'},
+      {icon:'🎙️',t:'Sound',b:'Built-in mic is fine for small rooms. A clip-on mic (~$15) helps for large spaces.'},
+    ];
+    document.getElementById('yt-equipment').innerHTML=tips.map(tip=>`
+      <div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--c-border);">
+        <div style="font-size:24px;min-width:36px;">${tip.icon}</div>
+        <div style="font-size:13px;line-height:1.65;"><strong style="color:var(--c-maroon);">${tip.t}:</strong> ${tip.b}</div>
+      </div>`).join('');
+  },
+  saveLink(val){DB.lsSet('ytLink',val);},
+  shareWhatsApp(){
+    const link=document.getElementById('yt-link')?.value?.trim();
+    const msg=`🙏 *Srinivasan Shashtiabdha Poorthi (60th Birthday)*\n\n`+
+      (link?`📺 Watch Live on YouTube:\n${link}\n\n`:'📺 YouTube link will be shared soon.\n\n')+
+      `📅 *Session 1:* Fri Jun 12, 2026 at 6:30 PM IST — Veda Parayanam & Divyaprabhandham Goshti\n`+
+      `📅 *Session 2:* Sat Jun 13, 2026 at 6:30 PM IST — Shashtiabdha Poorthi Puja + Sudharshana Homam\n\n`+
+      `🙏 Jai Sriman Narayana`;
+    window.open('https://wa.me/?text='+encodeURIComponent(msg),'_blank');
+  },
+  copyLink(){
+    const link=document.getElementById('yt-link')?.value?.trim();
+    if(!link){APP.toast('Paste your YouTube link first','error');return;}
+    navigator.clipboard.writeText(link).then(()=>APP.toast('Link copied!','success'));
+  },
+
+  async resyncAll(){
+    if(!DB.sbOk()){APP.toast('Connect to Supabase first in Settings','error');return;}
+    if(!confirm('This will overwrite ALL Supabase data with your current local data. Continue?'))return;
+    APP.setSyncStatus('syncing');
+    APP.toast('Uploading all data to cloud…','success');
+    const result = await DB.pushAllToCloud();
+    if(result.ok){
+      APP.setSyncStatus('synced');
+      APP.toast(`✅ Synced ${result.pushed} records to cloud!`,'success');
+    } else {
+      APP.setSyncStatus('error');
+      APP.toast('Sync had errors — check console','error');
+    }
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SETTINGS — Supabase config, data management, GitHub guide
+// ═══════════════════════════════════════════════════════════════════════
+const SETTINGS={
+  render(){
+    const url=DB.sbUrl(),key=DB.sbKey();
+    if(url)document.getElementById('sb-url').value=url;
+    if(key)document.getElementById('sb-key').value=key;
+
+    document.getElementById('sql-schema').textContent=`-- ════════════════════════════════════════════════
+-- Shashtiabdha Poorthi Planner — Supabase Schema
+-- Run once in: supabase.com → Project → SQL Editor → New query → Run
+-- ════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id         serial PRIMARY KEY,
+  task       text NOT NULL,
+  cat        text,
+  owner      text,
+  priority   text DEFAULT 'High',
+  status     text DEFAULT 'Pending',
+  notes      text,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS guests (
+  id       serial PRIMARY KEY,
+  name     text NOT NULL,
+  rel      text,
+  phone    text,
+  coming   int  DEFAULT 1,
+  called   text DEFAULT 'No',
+  rsvp     text DEFAULT '—',
+  location text,
+  notes    text
+);
+
+CREATE TABLE IF NOT EXISTS schedule (
+  id          serial PRIMARY KEY,
+  day         text,
+  event       text NOT NULL,
+  start_time  text,
+  end_time    text,
+  location    text,
+  responsible text,
+  notes       text
+);
+
+CREATE TABLE IF NOT EXISTS shopping (
+  id       serial PRIMARY KEY,
+  item     text NOT NULL,
+  cat      text,
+  grp      text,
+  qty      numeric DEFAULT 1,
+  unit     text,
+  assigned text,
+  est_cost numeric DEFAULT 0,
+  bought   text DEFAULT 'No',
+  notes    text
+);
+
+CREATE TABLE IF NOT EXISTS budget (
+  id     serial PRIMARY KEY,
+  cat    text,
+  est    numeric DEFAULT 0,
+  actual numeric DEFAULT 0,
+  notes  text
+);
+
+CREATE TABLE IF NOT EXISTS brahmanas (
+  id       serial PRIMARY KEY,
+  slot     int,
+  name     text,
+  phone    text,
+  whatsapp text,
+  address  text,
+  dakshina text,
+  special  text
+);
+
+-- Enable Row Level Security (open policy — single family use)
+ALTER TABLE tasks      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guests     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE schedule   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shopping   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE budget     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brahmanas  ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY IF NOT EXISTS "open" ON tasks      FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "open" ON guests     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "open" ON schedule   FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "open" ON shopping   FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "open" ON budget     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "open" ON brahmanas  FOR ALL USING (true) WITH CHECK (true);
+
+-- NOTE: cleaning and food_status are stored only in browser localStorage (no cloud sync needed).`;
+  },
+
+  async saveSupabase(){
+    const url=document.getElementById('sb-url').value.trim();
+    const key=document.getElementById('sb-key').value.trim();
+    if(!url||!key){APP.toast('Enter both URL and key','error');return;}
+    localStorage.setItem('sp3_cfg_url',url);
+    localStorage.setItem('sp3_cfg_key',key);
+    const el=document.getElementById('sb-status');
+    el.innerHTML='<span style="color:var(--c-muted);">Testing connection…</span>';
+    try{
+      const r=await fetch(url+'/rest/v1/tasks?limit=1',{
+        headers:{'apikey':key,'Authorization':'Bearer '+key}
+      });
+      if(r.ok){
+        el.innerHTML='<span style="color:var(--c-green);">✅ Connected! Data will now sync to Supabase on every change.</span>';
+        APP.toast('Connected to Supabase!','success');
+        APP.setSyncStatus('synced');
+        // Check if Supabase is empty — if so, push all local data up first
+        const cloudCheck = await DB.loadFromCloud();
+        const tasksInCloud = (await DB.sb('GET','tasks',null,'?select=id&limit=1')) || [];
+        if (tasksInCloud.length === 0) {
+          // Cloud is empty — push everything from localStorage
+          el.innerHTML='<span style="color:var(--c-gold);">⬆️ First connect detected — uploading your data to cloud…</span>';
+          APP.setSyncStatus('syncing');
+          const result = await DB.pushAllToCloud((msg) => {
+            el.innerHTML=`<span style="color:var(--c-gold);">⬆️ ${msg}</span>`;
+          });
+          if (result.ok) {
+            el.innerHTML=`<span style="color:var(--c-green);">✅ Uploaded ${result.pushed} records to Supabase! All devices will now sync.</span>`;
+            APP.toast(`Uploaded ${result.pushed} records to cloud!`, 'success');
+          } else {
+            el.innerHTML=`<span style="color:var(--c-rust);">⚠️ Upload had ${result.errors} errors. Check console.</span>`;
+          }
+        } else {
+          // Cloud has data — load it into local state
+          ['tasks','guests','schedule','shopping','budget','cleaning','brahm','foodStatus'].forEach(k=>{
+            const fresh=DB.lsGet(k); if(fresh) STATE[k]=fresh;
+          });
+          el.innerHTML='<span style="color:var(--c-green);">✅ Connected! Data will now sync to Supabase on every change.</span>';
+          APP.toast('Connected — cloud data loaded!','success');
+          APP.navigate(APP.currentView);
+        }
+        APP.setSyncStatus('synced');
+      }else{
+        el.innerHTML='<span style="color:var(--c-rust);">❌ Connection failed (status '+r.status+'). Check URL & key, and make sure you ran the SQL schema.</span>';
+        APP.setSyncStatus('error');
+      }
+    }catch(e){
+      el.innerHTML='<span style="color:var(--c-rust);">❌ Cannot reach Supabase. Open this file directly in Chrome/Safari (not inside Claude preview window).</span>';
+      APP.setSyncStatus('error');
+    }
+  },
+
+  clearSupabase(){
+    localStorage.removeItem('sp3_cfg_url');localStorage.removeItem('sp3_cfg_key');
+    document.getElementById('sb-url').value='';document.getElementById('sb-key').value='';
+    document.getElementById('sb-status').textContent='';
+    APP.setSyncStatus('local');APP.toast('Supabase config cleared');
+  },
+
+  copySQL(){
+    navigator.clipboard.writeText(document.getElementById('sql-schema').textContent)
+      .then(()=>APP.toast('SQL copied — paste in Supabase SQL Editor','success'));
+  },
+
+  exportData(){
+    const data=JSON.stringify(STATE,null,2);
+    const blob=new Blob([data],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='shashtiabdha_backup_'+new Date().toISOString().split('T')[0]+'.json';
+    a.click();APP.toast('Backup exported','success');
+  },
+
+  importData(){document.getElementById('import-file').click();},
+
+  handleImport(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const data=JSON.parse(ev.target.result);
+        if(!confirm('This will overwrite all current data. Continue?'))return;
+        Object.keys(data).forEach(k=>{STATE[k]=data[k];DB.lsSet(k,data[k]);});
+        APP.toast('Data imported','success');APP.navigate('dashboard');
+      }catch{APP.toast('Invalid JSON file','error');}
+    };reader.readAsText(file);
+  },
+
+  resetAll(){
+    if(!confirm('⚠️ DELETE ALL DATA and restore defaults? This cannot be undone.'))return;
+    ['tasks','guests','schedule','shopping','budget','cleaning','brahm','foodStatus','ytLink'].forEach(k=>DB.lsDel(k));
+    location.reload();
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COUNTDOWN TIMER
+// ═══════════════════════════════════════════════════════════════════════
+function updateCountdown(){
+  const target=new Date('2026-06-13T09:00:00'),now=new Date(),diff=target-now;
+  if(diff<=0){
+    document.getElementById('countdown').innerHTML='<div style="font-family:var(--font-display);color:var(--c-gold3);font-size:13px;">🙏 Today is the day!</div>';
+    return;
+  }
+  document.getElementById('cd-d').textContent=Math.floor(diff/864e5);
+  document.getElementById('cd-h').textContent=Math.floor((diff%864e5)/36e5);
+  document.getElementById('cd-m').textContent=Math.floor((diff%36e5)/6e4);
+}
+updateCountdown();setInterval(updateCountdown,30000);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EVENT LISTENERS
+// ═══════════════════════════════════════════════════════════════════════
+document.getElementById('nav-inner').addEventListener('click',e=>{
+  const btn=e.target.closest('[data-view]');
+  if(btn) APP.navigate(btn.dataset.view);
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')APP.closeModal();});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════════════
+(async function init(){
+  // Restore theme
+  const theme=DB.lsGet('theme');
+  if(theme==='dark') document.documentElement.setAttribute('data-theme','dark');
+
+  // Set sync badge initial state
+  APP.setSyncStatus(DB.sbOk()?'synced':'local');
+
+  // If Supabase configured, try loading cloud data in background
+  if(DB.sbOk()){
+    APP.setSyncStatus('syncing');
+    try{
+      const loaded=await DB.loadFromCloud();
+      if(loaded){
+        ['tasks','guests','schedule','shopping','budget','cleaning','brahm','foodStatus'].forEach(k=>{
+          const fresh=DB.lsGet(k);if(fresh)STATE[k]=fresh;
+        });
+        APP.setSyncStatus('synced');
+        // Re-render current view with fresh cloud data
+        APP.navigate(APP.currentView);
+      }
+    }catch(e){
+      console.warn('Cloud load failed on init',e);
+      APP.setSyncStatus('error');
+    }
+  }
+
+  // Render initial view
+  DASHBOARD.render();
+  APP.updateBadges();
+})();
+</script>
+</body>
+</html>
